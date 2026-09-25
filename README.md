@@ -23,14 +23,14 @@ rotating the phone just re-lays it out.
 
 | Demo | Sensors | What you do |
 |---|---|---|
-| `donut` | game rotation vector (+ gyroscope) | the donut.c torus stays still in the room; turn the phone to see it from other sides. `r` recenter, `a` auto-spin, `+`/`-` zoom |
+| `donut` | game rotation vector (+ gyroscope, light) | the donut.c torus stays still in the room; turn the phone to see it from other sides; its brightness follows the room light. `r` recenter, `a` auto-spin, `+`/`-` zoom, `l` light on/off |
 | `fluid` | accelerometer | tilt to pour, shake for waves, lay flat for zero-g. `s` splash, `r` refill, `+`/`-` amount |
 | `space` | game rotation vector (+ step detector) | the screen is a window into a ray-marched world (pillars, trees, blocks, portals, crystals, a rare monolith; a sun that lights and shadows them, a ringed planet, a moon, fixed stars); turn to look around. `w`/`s` step, `g` glide forward, `p` step mode (real steps move you; its bar beats with each step) |
 | `navball` | rotation vector + magnetometer | a 3D globe of directions fixed in the room (sky on top, ground below, N E S W, elevation lines), seen from outside through the phone: flat, you look down on it like a compass rose; upright, you see its side. Heading, pitch and roll of the phone below |
 | `compass` | rotation vector + magnetometer | a flat compass rose that turns so N points north, following the phone's long axis however it is rolled; the heading in big digits |
 | `map` | location + rotation vector | OpenStreetMap around you in ASCII, turning with the phone. `+`/`-` zoom, `n` north-up |
 | `gestures` | Moto gestures, step detector | chop, twist, flip, lift or walk: each burst of big letters is one sensor event |
-| `eye` | proximity + light (+ accelerometer) | cover the top of the phone and it closes; tilt and it looks that way; light brightens it, shrinks the pupil and grows the glint, and direct sun makes it squint |
+| `eye` | proximity + light + orientation | a ray-marched 3D eye lit by a lamp above you: turn the phone and the light and glint move; cover the top of the phone and it closes; tilt and it looks that way; light sets the pupil size, and direct sun makes it squint |
 | `sky` | light | cover the sensor for night (moon, stars, lit windows), light it for day |
 | `scope` | any | an oscilloscope: every value of any sensors as scrolling traces. `space` pause |
 

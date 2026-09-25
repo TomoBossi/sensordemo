@@ -7,7 +7,7 @@ func init() {
 		name: "donut",
 		desc: "the classic spinning ASCII donut, held still in space by the phone's orientation",
 		uses: []string{"game_rotation_vector", "rotation_vector", "gyroscope"},
-		new:  func(specs []string) Demo { return &donut{specs: specs, zoom: 1} },
+		new:  func(specs []string) Demo { return &donut{specs: specs, zoom: 1, useLight: true, lightChanged: true} },
 	})
 }
 
@@ -26,6 +26,10 @@ type donut struct {
 	angle      float64
 	zoom       float64
 	zbuf       []float64
+
+	useLight     bool    // l: brightness follows the light sensor
+	lightChanged bool    // (un)subscribe on the next frame
+	lightLevel   float64 // smoothed lux/(lux+300)
 }
 
 // Shading ramp from donut.c, dark to bright, and matching warm colors.
@@ -61,6 +65,8 @@ func (d *donut) Setup(ss *Streams) ([]*Gauge, error) {
 			g = append(g, &Gauge{Spec: "gyroscope", Index: i, Label: "gyro " + ax, Unit: "rad/s", Scale: &Symmetric{Max: 3}})
 		}
 	}
+	// Shown only while light is on (the stream exists only then).
+	g = append(g, &Gauge{Spec: "light", Label: "light", Unit: "lux", Scale: &Asymptotic{K: 300}})
 	return g, nil
 }
 
@@ -71,6 +77,7 @@ func (d *donut) Help() []string {
 		"",
 		"r  recenter (current orientation = front view)",
 		"a  toggle auto-spin",
+		"l  toggle light: the donut's brightness follows the room's light",
 		"+ -  zoom",
 	}
 }
@@ -81,6 +88,9 @@ func (d *donut) Key(k byte) {
 		d.hasRef = false
 	case 'a':
 		d.spin = !d.spin
+	case 'l':
+		d.useLight = !d.useLight
+		d.lightChanged = true
 	case '+', '=':
 		d.zoom = math.Min(d.zoom*1.15, 4)
 	case '-', '_':
@@ -92,6 +102,24 @@ func (d *donut) Draw(v *View, ss *Streams, t, dt float64) {
 	w, h := v.W, v.H
 	if w < 4 || h < 4 {
 		return
+	}
+	if d.lightChanged {
+		d.lightChanged = false
+		if d.useLight {
+			if _, err := ss.Subscribe("light", 0); err != nil {
+				d.useLight = false
+			}
+		} else {
+			ss.Unsubscribe("light")
+		}
+	}
+	gain := 1.0
+	if d.useLight {
+		if r := ss.Get("light").Read(); r.OK && len(r.V) > 0 {
+			d.lightLevel += (r.V[0]/(r.V[0]+300) - d.lightLevel) * math.Min(1, dt*3)
+			// dark room: a dim donut with only its highlights; bright: full
+			gain = 0.3 + 1.0*d.lightLevel
+		}
 	}
 
 	// Pose of the donut in device coordinates: undo the phone's rotation
@@ -158,7 +186,7 @@ func (d *donut) Draw(v *View, ss *Streams, t, dt float64) {
 			}
 			d.zbuf[y*w+x] = ooz
 			n := pose.Apply(Vec3{ct * cp, st, -ct * sp})
-			L := n.Dot(light)
+			L := n.Dot(light) * gain
 			k := 0
 			if L > 0 {
 				k = min(int(L*float64(len(ramp))), len(ramp)-1)
