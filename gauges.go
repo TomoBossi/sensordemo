@@ -18,7 +18,9 @@ func lin(lo, hi float64) func() Scale { return func() Scale { return &Linear{Min
 var xyz = []string{"x", "y", "z"}
 
 // axes knows the common Android sensor types; anything else gets generic
-// labels and an auto-ranging symmetric scale.
+// labels and an auto-ranging symmetric scale. Magnetometer: Earth's field is
+// ~22 uT (South Atlantic) to ~67 uT (near the poles); +-45 sits in between
+// and auto-grows beyond.
 var axes = map[string]axisInfo{
 	"accelerometer":               {xyz, "m/s2", fixed(15)},
 	"accelerometer_uncalibrated":  {[]string{"x", "y", "z", "bias x", "bias y", "bias z"}, "m/s2", fixed(15)},
@@ -26,8 +28,8 @@ var axes = map[string]axisInfo{
 	"gravity":                     {xyz, "m/s2", fixed(10)},
 	"gyroscope":                   {xyz, "rad/s", sym(3)},
 	"gyroscope_uncalibrated":      {[]string{"x", "y", "z", "drift x", "drift y", "drift z"}, "rad/s", sym(3)},
-	"magnetic_field":              {xyz, "uT", sym(30)},
-	"magnetic_field_uncalibrated": {[]string{"x", "y", "z", "bias x", "bias y", "bias z"}, "uT", sym(30)},
+	"magnetic_field":              {xyz, "uT", sym(45)},
+	"magnetic_field_uncalibrated": {[]string{"x", "y", "z", "bias x", "bias y", "bias z"}, "uT", sym(45)},
 	"orientation":                 {[]string{"azimuth", "pitch", "roll"}, "deg", sym(180)},
 	"rotation_vector":             {[]string{"x", "y", "z", "w", "acc"}, "", sym(1)},
 	"game_rotation_vector":        {[]string{"x", "y", "z", "w"}, "", sym(1)},
