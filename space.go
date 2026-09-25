@@ -179,11 +179,15 @@ func (s *space) cast(v *View, x, y int, dir Vec3) bool {
 			if diffuse > 0 {
 				light = diffuse * softShadow(p.Add(n.Scale(0.02)))
 			}
-			lum := 0.22 + 0.9*light
+			lum := 0.25 + 1.0*light
 			switch mat {
-			case matFloor: // checkered floor, 1 m tiles
+			case matFloor:
+				// The sun is low, so a flat floor catches little of it;
+				// scale by the sun's height so lit floor is bright again
+				// (shadows stay dark). Checkered, 1 m tiles.
+				lum = 0.25 + 0.8*light/sunDir[2]
 				if (int(math.Floor(p[0]))+int(math.Floor(p[1])))&1 == 0 {
-					lum *= 0.6
+					lum *= 0.65
 				}
 			case matCrystal: // a glint where the sun reflects
 				r := dir.Sub(n.Scale(2 * dir.Dot(n)))
