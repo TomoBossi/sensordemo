@@ -34,6 +34,7 @@ rotating the phone just re-lays it out.
 | `eye` | proximity + light + orientation | a ray-marched 3D eye lit by a lamp above you: turn the phone and the light and glint move; cover the top of the phone and it closes; tilt and it looks that way; light sets the pupil size, and direct sun makes it squint |
 | `sky` | light | one disc driven by light on a log scale: a new moon among stars in the dark, waxing to full with room light, glowing brighter, then turning cell by cell into a churning sun with corona and flares in sunlight. The moon is the real near side, upside down as seen from the southern hemisphere |
 | `hourglass` | gravity | a sand timer: flip the phone to turn it over; grains really fall and pile toward wherever is down; the neck is metered to the duration (`sensordemo hourglass 5m`, default 1m). `r` refill |
+| `snowglobe` | accelerometer + linear acceleration | a glass dome with a cabin, a snowman and a pine tree: shake the phone for a flurry that slowly settles on everything; tilt it and the snow drifts. `space` shake, `r` reset |
 | `scope` | any | an oscilloscope: every value of any sensors as scrolling traces. `space` pause |
 
 ## Compass accuracy
