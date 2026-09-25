@@ -36,6 +36,7 @@ rotating the phone just re-lays it out.
 | `hourglass` | gravity | a sand timer: flip the phone to turn it over; grains really fall and pile toward wherever is down; the neck is metered to the duration (`sensordemo hourglass 5m`, default 1m). `r` refill |
 | `snowglobe` | accelerometer + linear acceleration | a glass dome with a cabin, a snowman and a pine tree: shake the phone for a flurry that slowly settles on everything; tilt it and the snow drifts. `space` shake, `r` reset |
 | `maze` | gravity | a marble maze: tilt to roll the ball to the flag; holes in dead ends send you back; your time and best time. `n` new maze, `r` restart |
+| `detector` | magnetometer | a metal detector: zero it away from metal (`c`), then sweep over walls and objects; a needle dial, pings that speed up near steel and magnets, a strip chart, and optional vibration (`b`) |
 | `scope` | any | an oscilloscope: every value of any sensors as scrolling traces. `space` pause |
 
 ## Compass accuracy

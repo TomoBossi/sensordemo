@@ -228,7 +228,9 @@ func (g *snowglobe) Draw(v *View, ss *Streams, t, dt float64) {
 		}
 		sink := 1.2 + 0.4*float64(f.size) // rows per second; big flakes sink faster
 		swirl := g.stir * 1.5
-		f.vx += (ux*sink*2-f.vx)*dt*1.5 + (g.rng.Float64()-0.5)*swirl*dt*6 + math.Sin(t*0.9+f.y)*dt*0.4
+		// Falling follows gravity on the screen: tilt the phone and the snow
+		// slants that way (x in columns, which are half a row wide).
+		f.vx += (ux*sink*6-f.vx)*dt*1.5 + (g.rng.Float64()-0.5)*swirl*dt*6 + math.Sin(t*0.9+f.y)*dt*0.4
 		f.vy += (uy*sink-f.vy)*dt*1.5 + (g.rng.Float64()-0.5)*swirl*dt*3
 		nx, ny := f.x+f.vx*dt, f.y+f.vy*dt
 		if !g.in(nx, ny) {
