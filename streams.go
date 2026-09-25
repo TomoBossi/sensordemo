@@ -18,6 +18,7 @@ type Stream struct {
 	Spec   string // as requested: a type or exact name
 	Sensor string // resolved name
 	Info   proto.Sensor
+	sub    *client.Subscription
 
 	mu      sync.Mutex
 	last    client.Event
@@ -141,7 +142,7 @@ func (ss *Streams) Subscribe(spec string, hz float64) (*Stream, error) {
 		return nil, fmt.Errorf("%s: %w", spec, err)
 	}
 	info, _ := ss.Lookup(sub.Sensor)
-	s := &Stream{Spec: spec, Sensor: sub.Sensor, Info: info}
+	s := &Stream{Spec: spec, Sensor: sub.Sensor, Info: info, sub: sub}
 	ss.byKey[spec] = s
 	go func() {
 		for ev := range sub.C {
@@ -149,6 +150,19 @@ func (ss *Streams) Subscribe(spec string, hz float64) (*Stream, error) {
 		}
 	}()
 	return s, nil
+}
+
+// Unsubscribe stops the stream under spec, so sensord can power the sensor
+// down if nobody else reads it. Get returns nil for it afterwards.
+func (ss *Streams) Unsubscribe(spec string) {
+	s := ss.byKey[spec]
+	if s == nil {
+		return
+	}
+	delete(ss.byKey, spec)
+	if s.sub != nil {
+		s.sub.Close()
+	}
 }
 
 // Get returns the stream subscribed under spec, or nil.

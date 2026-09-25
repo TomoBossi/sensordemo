@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"strings"
+	"time"
 )
 
 // Scale maps a reading onto [0, 1] along a gauge bar.
@@ -67,6 +68,7 @@ type Gauge struct {
 	Label string
 	Unit  string
 	Scale Scale
+	Pulse bool // event sensor: the bar flashes full on each event, then fades
 }
 
 // DrawHUD draws the title line and one line per gauge, and returns how many
@@ -94,7 +96,11 @@ func DrawHUD(v *View, title, palName string, gauges []*Gauge, ss *Streams) int {
 			hz = rateText(s, r)
 			lastSpec = g.Spec
 		}
-		drawGauge(v, row, g, r, hz)
+		if g.Pulse {
+			drawPulse(v, row, g, r)
+		} else {
+			drawGauge(v, row, g, r, hz)
+		}
 		row++
 	}
 	for x := 0; x < v.W; x++ {
@@ -111,6 +117,33 @@ func rateText(s *Stream, r Reading) string {
 		return fmt.Sprintf("%.0fHz", r.Hz)
 	default:
 		return fmt.Sprintf("%d ev", r.Count)
+	}
+}
+
+// drawPulse shows an event sensor as a heartbeat: each event fills the bar,
+// which then drains over about half a second, next to the event count.
+func drawPulse(v *View, row int, g *Gauge, r Reading) {
+	num := "      --"
+	if r.OK {
+		num = fmt.Sprintf("%8d", r.Count)
+	}
+	left := fmt.Sprintf(" %-10.10s%s %-5.5s ", g.Label, num, g.Unit)
+	barW := v.W - len(left) - 11
+	v.Text(0, row, left, 250)
+	if barW < 4 {
+		return
+	}
+	x0 := len(left)
+	v.Set(x0, row, '[', 240)
+	v.Set(x0+barW+1, row, ']', 240)
+	v.Text(x0+1, row, strings.Repeat("-", barW), 238)
+	if !r.OK {
+		return
+	}
+	level := math.Exp(-time.Since(r.Arrived).Seconds() / 0.18)
+	n := int(level*float64(barW) + 0.5)
+	for i := 0; i < n; i++ {
+		v.Set(x0+1+i, row, '#', 196)
 	}
 }
 

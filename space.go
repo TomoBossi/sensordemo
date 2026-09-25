@@ -18,10 +18,13 @@ func init() {
 // coordinates, so the screen behaves like a window. Each real step, from the
 // step detector, walks the camera forward along where the phone faces.
 type space struct {
-	pos, target Vec3 // camera position; target is where walking is heading
-	steps       int
-	stepsSeen   int
-	hasSteps    bool
+	pos, target   Vec3 // camera position; target is where movement is heading
+	steps         int  // pending steps from keys or the step detector
+	stepsSeen     int
+	stepMode      bool // p: real steps move you
+	glide         bool // g: glide forward at walking speed
+	stepErr       string
+	pendingToggle bool // step mode changed; (un)subscribe on the next frame
 }
 
 // start is between pillars (the grid puts one at the origin).
@@ -30,6 +33,7 @@ var start = Vec3{pillarGap / 2, pillarGap / 2, eyeHeight}
 const (
 	eyeHeight = 1.6
 	stepLen   = 0.75 // meters per step
+	walkSpeed = 1.3  // meters per second when gliding
 	pillarGap = 6.0  // pillar grid spacing
 )
 
@@ -40,20 +44,18 @@ func (s *space) Setup(ss *Streams) ([]*Gauge, error) {
 		return nil, err
 	}
 	g := gaugesFor(st, 3)
-	if sd, err := ss.Subscribe("step_detector", 0); err == nil {
-		s.hasSteps = true
-		g = append(g, gaugesFor(sd, 1)...)
-	}
+	// Shown only while step mode is on (the stream exists only then).
+	g = append(g, &Gauge{Spec: "step_detector", Label: "steps", Pulse: true})
 	return g, nil
 }
 
 func (s *space) Help() []string {
 	return []string{
-		"The screen is a window: hold the phone up and",
-		"turn around to look at the world behind it.",
-		"Walk (real steps) to move forward where you face.",
+		"The screen is a window: hold the phone up and turn around to look at the world behind it.",
 		"",
 		"w / s  step forward / back",
+		"g      glide forward at walking speed (toggle)",
+		"p      step mode: real steps move you (toggle)",
 		"r      back to the start",
 	}
 }
@@ -64,6 +66,11 @@ func (s *space) Key(k byte) {
 		s.steps++
 	case 's':
 		s.steps--
+	case 'g':
+		s.glide = !s.glide
+	case 'p':
+		s.stepMode = !s.stepMode
+		s.pendingToggle = true
 	case 'r':
 		s.pos, s.target = start, start
 	}
@@ -118,22 +125,42 @@ func (s *space) Draw(v *View, ss *Streams, t, dt float64) {
 		R = RotZ(t * 0.2).Mul(RotX(math.Pi / 2))
 	}
 
-	// Walking: new steps push the target forward along the horizontal view
-	// direction; the camera glides toward it.
-	if s.hasSteps {
-		if r := ss.Get("step_detector").Read(); r.Count > s.stepsSeen {
-			s.steps += r.Count - s.stepsSeen
-			s.stepsSeen = r.Count
+	// Step mode subscribes to the step detector only while it is on, so the
+	// sensor is off the rest of the time.
+	if s.pendingToggle {
+		s.pendingToggle = false
+		if s.stepMode {
+			if st, err := ss.Subscribe("step_detector", 0); err != nil {
+				s.stepMode, s.stepErr = false, "step mode unavailable: "+err.Error()
+			} else {
+				s.stepsSeen, s.stepErr = st.Read().Count, ""
+			}
+		} else {
+			ss.Unsubscribe("step_detector")
 		}
 	}
-	if s.steps != 0 {
-		fwd := R.Apply(Vec3{0, 0, -1}) // out of the back of the phone
-		if math.Hypot(fwd[0], fwd[1]) < 0.3 {
-			fwd = R.Apply(Vec3{0, 1, 0}) // phone flat: use its top edge
+	if s.stepMode {
+		if st := ss.Get("step_detector"); st != nil {
+			if r := st.Read(); r.Count > s.stepsSeen {
+				s.steps += r.Count - s.stepsSeen
+				s.stepsSeen = r.Count
+			}
 		}
-		fwd = Vec3{fwd[0], fwd[1], 0}.Norm()
+	}
+
+	// Movement is along the horizontal part of where the phone faces;
+	// the camera glides toward the target.
+	fwd := R.Apply(Vec3{0, 0, -1}) // out of the back of the screen
+	if math.Hypot(fwd[0], fwd[1]) < 0.3 {
+		fwd = R.Apply(Vec3{0, 1, 0}) // phone flat: use the screen's top edge
+	}
+	fwd = Vec3{fwd[0], fwd[1], 0}.Norm()
+	if s.steps != 0 {
 		s.target = s.target.Add(fwd.Scale(stepLen * float64(s.steps)))
 		s.steps = 0
+	}
+	if s.glide {
+		s.target = s.target.Add(fwd.Scale(walkSpeed * dt))
 	}
 	s.pos = s.pos.Add(s.target.Sub(s.pos).Scale(math.Min(1, dt*4)))
 
@@ -148,11 +175,9 @@ func (s *space) Draw(v *View, ss *Streams, t, dt float64) {
 			s.cast(v, x, y, dir, sun, t)
 		}
 	}
-	msg := "walk to move"
-	if !s.hasSteps {
-		msg = "w/s to move (step sensor unavailable)"
+	if s.stepErr != "" {
+		v.Text(1, v.H-1, s.stepErr, 203)
 	}
-	v.Text(1, v.H-1, msg, 240)
 }
 
 func (s *space) cast(v *View, x, y int, dir, sun Vec3, t float64) {
