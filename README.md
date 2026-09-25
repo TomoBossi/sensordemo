@@ -37,6 +37,7 @@ rotating the phone just re-lays it out.
 | `snowglobe` | accelerometer + linear acceleration | a glass dome with a cabin, a snowman and a pine tree: shake the phone for a flurry that slowly settles on everything; tilt it and the snow drifts. `space` shake, `r` reset |
 | `maze` | gravity | a marble maze: tilt to roll the ball to the flag; holes in dead ends send you back; your time and best time. `n` new maze, `r` restart |
 | `detector` | magnetometer | a metal detector: zero it away from metal (`c`), then sweep over walls and objects; a needle dial, pings that speed up near steel and magnets, a strip chart, and optional vibration (`b`) |
+| `homing` | location + rotation vector | a 3D arrow over a compass disc pointing to a saved place, with the distance and walking time. Save where you stand with `sensordemo homing save` (or `save:NAME`), point with `sensordemo homing [NAME]`; places stay in `~/.config/sensordemo/places.json` |
 | `scope` | any | an oscilloscope: every value of any sensors as scrolling traces. `space` pause |
 
 ## Compass accuracy
