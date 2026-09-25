@@ -94,8 +94,15 @@ func usage() {
 	fmt.Print(columns([][2]string{
 		{"  sensordemo [--color] DEMO", "a demo by name"},
 		{"  sensordemo [--color] SENSOR[,SENSOR...]", "the demo that uses these sensors"},
-		{"  sensordemo list", "the demos"},
+		{"  sensordemo list", "the demos and the sensors they use"},
 	}, width))
+	fmt.Println("\ndemos:")
+	sort.Slice(registry, func(i, j int) bool { return registry[i].name < registry[j].name })
+	var rows [][2]string
+	for _, e := range registry {
+		rows = append(rows, [2]string{"  " + e.name, e.desc})
+	}
+	fmt.Print(columns(rows, width))
 	fmt.Println()
 	fmt.Println(reflow(`Full-terminal ASCII demos of the phone's sensors, fed by sensord. Sensors are names or types from "sensord list"; they map to the demo that uses them, or to the scope, which shows any sensor.
 
