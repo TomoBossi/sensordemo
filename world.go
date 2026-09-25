@@ -181,19 +181,24 @@ func sceneNormal(p Vec3) Vec3 {
 	}.Norm()
 }
 
-// softShadow marches toward the sun: 1 in full light, toward 0 in shadow,
-// with a soft edge (after Inigo Quilez).
-func softShadow(p Vec3) float64 {
-	res, t := 1.0, 0.05
-	for i := 0; i < 28 && t < 18; i++ {
-		d, _ := scene(p.Add(sunDir.Scale(t)))
-		if d < 0.002 {
-			return 0
+// inShadow marches from p toward the sun, treated as a point: p is shadowed
+// if the ray hits anything. A yes/no answer keeps shadow edges crisp and
+// doesn't depend on distance estimates, which scene deliberately shortens
+// near cell borders.
+func inShadow(p Vec3) bool {
+	t := 0.05
+	for i := 0; i < 64 && t < 20; i++ {
+		q := p.Add(sunDir.Scale(t))
+		if q[2] > 6.5 { // above everything in the world
+			return false
 		}
-		res = math.Min(res, 8*d/t)
-		t += math.Max(d, 0.05)
+		d, _ := scene(q)
+		if d < 0.003 {
+			return true
+		}
+		t += math.Max(d, 0.02)
 	}
-	return math.Max(0, math.Min(1, res))
+	return false
 }
 
 // shadeSky returns what a ray that hits nothing sees, besides stars: the

@@ -176,8 +176,8 @@ func (s *space) cast(v *View, x, y int, dir Vec3) bool {
 			n := sceneNormal(p)
 			diffuse := n.Dot(sunDir)
 			light := 0.0
-			if diffuse > 0 {
-				light = diffuse * softShadow(p.Add(n.Scale(0.02)))
+			if diffuse > 0 && !inShadow(p.Add(n.Scale(0.02))) {
+				light = diffuse
 			}
 			lum := 0.25 + 1.0*light
 			switch mat {
