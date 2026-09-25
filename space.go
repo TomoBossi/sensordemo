@@ -9,7 +9,7 @@ func init() {
 		name: "space",
 		desc: "a window into a 3D world: turn the phone to look around, glide or walk to move",
 		uses: []string{"game_rotation_vector", "rotation_vector", "step_detector"},
-		new:  func(specs []string) Demo { return &space{} },
+		new:  func(specs []string) Demo { return &space{stepMode: true, pendingToggle: true} },
 	})
 }
 
@@ -56,7 +56,7 @@ func (s *space) Help() []string {
 		"",
 		"w / s  step forward / back",
 		"g      glide forward at walking speed (toggle)",
-		"p      step mode: real steps move you (toggle)",
+		"p      step mode: real steps move you (on at start; toggle)",
 		"r      back to the start",
 	}
 }
