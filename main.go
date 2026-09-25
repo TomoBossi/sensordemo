@@ -110,6 +110,9 @@ func list() {
 		if uses == "" {
 			uses = "(any)"
 		}
+		if len(uses) > 30 {
+			uses = uses[:27] + "..."
+		}
 		fmt.Fprintf(w, "%s\t%s\t%s\n", e.name, uses, e.desc)
 	}
 	w.Flush()
