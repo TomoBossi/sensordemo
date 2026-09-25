@@ -106,7 +106,7 @@ func smax(a, b, k float64) float64 { return -smin(-a, -b, k) }
 
 // almond is the eye opening: negative inside, narrower toward the corners.
 func almond(x, y float64) float64 {
-	const a, b = 0.95, 0.5
+	const a, b = 1.0, 0.4 // long and low, like the first eye
 	yy := y / (b * (1 - 0.3*x*x/(a*a)))
 	return (math.Hypot(x/a, yy) - 1) * b
 }
@@ -118,7 +118,7 @@ func faceHeight(x, y float64) float64 {
 	h := 0.66 - 0.06*x*x - 0.04*y*y
 	h += 0.24 * math.Exp(-(y-1.1)*(y-1.1)/0.09) * clamp01(1-0.2*x*x) // brow
 	h += 0.12 * math.Exp(-((y+1.05)*(y+1.05)/0.1 + x*x/1.6))         // cheek
-	yc := 0.66 + 0.2*(1-x*x/1.2)                                     // crease arc
+	yc := 0.52 + 0.18*(1-x*x/1.3)                                    // crease arc
 	if math.Abs(x) < 1.1 {
 		h -= 0.08 * math.Exp(-(y-yc)*(y-yc)/0.006) * (1 - x*x/1.21)
 	}
@@ -177,12 +177,35 @@ var (
 	caruncleCol = []uint8{52, 88, 89, 125, 131, 167, 168, 174, 175, 218}
 )
 
+// frontLamp keeps the lamp in front of the face: the phone's rotation moves
+// it only part of the way (damped), and never beyond a cone around straight
+// ahead, so the eye can't end up lit from behind.
+func frontLamp(rest, moved Vec3) Vec3 {
+	l := rest.Add(moved.Sub(rest).Scale(0.6)).Norm()
+	const minZ = 0.55 // at most ~57 degrees off straight ahead
+	if l[2] < minZ {
+		xy := math.Hypot(l[0], l[1])
+		s := math.Sqrt(1-minZ*minZ) / math.Max(xy, 1e-9)
+		l = Vec3{l[0] * s, l[1] * s, minZ}
+	}
+	return l
+}
+
+// cellNoise is a fixed pseudo-random value in [0, 1) per screen cell.
+func cellNoise(x, y int) float64 {
+	h := uint32(x)*0x9E3779B1 ^ uint32(y)*0x85EBCA77
+	h ^= h >> 15
+	h *= 0x2C1B3C6D
+	h ^= h >> 12
+	return float64(h&0xffff) / 65536
+}
+
 // eyeFade is 1 at the eye opening and falls off gently with distance from
 // its edge, so the lids and crease show as a soft halo that dissolves into
 // black rather than a lump of lit skin.
 func eyeFade(x, y float64) float64 {
-	f := clamp01((0.7 - almond(x, y)) / 0.7)
-	return f * f * (3 - 2*f)
+	f := clamp01((0.42 - almond(x, y)) / 0.36) // solid only at the lids, gone by ~0.42
+	return f * f * f * (3 - 2*f)             // steep: the spray thins out fast
 }
 
 // camera frames the eye and some face around it; returns the pixel
@@ -243,9 +266,9 @@ func (e *eye) Draw(v *View, ss *Streams, t, dt float64) {
 
 	e.gaze = Vec3{e.lookX * 0.5, -e.lookY * 0.4, 1}.Norm()
 	// Lid edge angles; closed, the upper lid reaches past the lower one.
-	e.thU = -0.18 + (0.5+0.18)*e.open
-	e.thL = -0.1 + (-0.42+0.1)*e.open
-	e.pupilA = 0.2 - 0.11*e.light
+	e.thU = -0.12 + (0.38+0.12)*e.open
+	e.thL = -0.05 + (-0.32+0.05)*e.open
+	e.pupilA = 0.24 - 0.12*e.light
 
 	// The lamp hangs above you in the room; in eye coordinates it moves as
 	// the phone turns. A soft fixed light keeps the change gentle.
@@ -264,7 +287,7 @@ func (e *eye) Draw(v *View, ss *Streams, t, dt float64) {
 					e.ref, e.hasRef = R, true
 				}
 				if e.hasRef {
-					lamp = R.T().Mul(e.ref).Apply(lamp0)
+					lamp = frontLamp(lamp0, R.T().Mul(e.ref).Apply(lamp0))
 				}
 			}
 		}
@@ -282,7 +305,7 @@ func (e *eye) Draw(v *View, ss *Streams, t, dt float64) {
 			e.shade(v, x, y, cam, dir, lamp, fill, strength)
 		}
 	}
-	e.lashes(v, camZ, tanX, tanY)
+	e.overlay(v, camZ, tanX, tanY)
 }
 
 func (e *eye) shade(v *View, x, y int, cam, dir, lamp, fill Vec3, strength float64) {
@@ -317,12 +340,12 @@ func (e *eye) shade(v *View, x, y int, cam, dir, lamp, fill Vec3, strength float
 				case ang < e.pupilA:
 					cols = pupilCol
 					lum *= 0.35
-				case ang < 0.44:
+				case ang < 0.5: // a big iris that touches the lids
 					cols = irisCol
 					side := n.Sub(e.gaze.Scale(cosA))
 					phi := math.Atan2(side[1], side[0])
 					fiber := 0.75 + 0.25*math.Sin(phi*23+math.Sin(phi*7)*2)
-					rim := 1 - 0.55*math.Pow(math.Max(0, (ang-0.34)/0.1), 2)
+					rim := 1 - 0.55*math.Pow(math.Max(0, (ang-0.38)/0.12), 2)
 					lum *= fiber * rim
 				default:
 					cols = scleraCol
@@ -340,7 +363,13 @@ func (e *eye) shade(v *View, x, y int, cam, dir, lamp, fill Vec3, strength float
 				v.Set(x, y, c, 231) // the wet glint
 				return
 			}
-			lum = math.Min(1, (lum+spec*0.5)*fade)
+			// Dissolve: past the lids the face breaks into scattered cells,
+			// fewer and dimmer outward, from a fixed per-cell noise so it
+			// holds still.
+			if fade < 1 && fade < cellNoise(x, y) {
+				return
+			}
+			lum = math.Min(1, (lum+spec*0.5)*math.Sqrt(fade))
 			if lum < 0.035 {
 				return
 			}
@@ -355,34 +384,63 @@ func (e *eye) shade(v *View, x, y int, cam, dir, lamp, fill Vec3, strength float
 	}
 }
 
-// lashes draws eyelashes along the upper lid margin, fanning outward, and
-// drooping along the seam when the eye is shut.
-func (e *eye) lashes(v *View, camZ, tanX, tanY float64) {
+// overlay draws what reads better as lines than as shading: the lid
+// margins while the eye is open, and when it is shut, the closed lid as one
+// curved line; lashes along the upper lid either way.
+func (e *eye) overlay(v *View, camZ, tanX, tanY float64) {
 	project := func(p Vec3) (int, int) {
 		s := camZ - p[2]
 		return int((p[0]/s/tanX + 1) / 2 * float64(v.W)), int((1 - p[1]/s/tanY) / 2 * float64(v.H))
 	}
-	const r = 1.12
-	lastX := -1
-	for x := -0.82; x <= 0.82; x += 0.03 {
+	// A point on the lid margin at angle th, at horizontal position x.
+	margin := func(x, th float64) (int, int) {
+		const r = 1.11
 		rr := math.Sqrt(r*r - x*x)
-		sx, sy := project(Vec3{x, rr * math.Sin(e.thU), rr * math.Cos(e.thU)})
-		if sx == lastX || sx%2 != 0 {
-			continue // about every other column
-		}
-		lastX = sx
-		c := byte('|')
-		switch {
-		case x < -0.3:
-			c = '\\'
-		case x > 0.3:
-			c = '/'
-		}
-		dy := -1
-		if e.open < 0.2 { // shut: lashes hang down over the seam
-			dy = 1
-			c = map[byte]byte{'\\': '/', '/': '\\', '|': '|'}[c]
-		}
-		v.Set(sx, sy+dy, c, 234)
+		return project(Vec3{x, rr * math.Sin(th), rr * math.Cos(th)})
 	}
+	col := rampAt(skinCol, 0.55+0.45*e.light)
+	const span = 0.9
+	shut := e.open < 0.15
+	lastLash := -99
+	for x := -span; x <= span; x += 0.01 {
+		taper := 1 - math.Abs(x)/span // margins meet at the corners
+		if shut {
+			// the closed lid: a gentle downward curve, like the first eye
+			sx, sy := margin(x, (e.thU+e.thL)/2-0.04*taper)
+			c := byte('=')
+			if taper < 0.15 {
+				c = '-'
+			}
+			v.Set(sx, sy, c, col)
+			if sx != lastLash && sx%3 == 0 && taper > 0.2 {
+				lastLash = sx
+				lash := map[bool]byte{true: '/', false: '\\'}[x < 0]
+				if math.Abs(x) < 0.25 {
+					lash = '|'
+				}
+				v.Set(sx, sy+1, lash, 236)
+			}
+			continue
+		}
+		ux, uy := margin(x, e.thL+(e.thU-e.thL)*(0.5+0.5*math.Sqrt(taper)))
+		lx, ly := margin(x, e.thU+(e.thL-e.thU)*(0.5+0.5*math.Sqrt(taper)))
+		v.Set(ux, uy, '~', col)
+		v.Set(lx, ly, '~', col)
+		if ux != lastLash && ux%2 == 0 && taper > 0.12 {
+			lastLash = ux
+			lash := byte('|')
+			switch {
+			case x < -0.3:
+				lash = '\\'
+			case x > 0.3:
+				lash = '/'
+			}
+			v.Set(ux, uy-1, lash, 236)
+		}
+	}
+}
+
+// rampAt picks the color at fraction f (0..1) of a dark-to-bright ramp.
+func rampAt(ramp []uint8, f float64) uint8 {
+	return ramp[min(int(math.Max(0, f)*float64(len(ramp))), len(ramp)-1)]
 }
