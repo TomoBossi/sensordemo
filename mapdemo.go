@@ -137,7 +137,7 @@ func (m *mapDemo) Draw(v *View, ss *Streams, t, dt float64) {
 	if rv := ss.Get("rotation_vector"); rv != nil {
 		if rr := rv.Read(); rr.OK {
 			if R, ok := FromRotationVector(rr.V); ok {
-				h := Heading(R)
+				h := Heading(R.Mul(screenFrame(ss)))
 				m.heading += math.Remainder(h-m.heading, 2*math.Pi) * math.Min(1, dt*6)
 			}
 		}

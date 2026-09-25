@@ -71,9 +71,9 @@ type Gauge struct {
 
 // DrawHUD draws the title line and one line per gauge, and returns how many
 // rows it used.
-func DrawHUD(v *View, title string, gauges []*Gauge, ss *Streams) int {
+func DrawHUD(v *View, title, palName string, gauges []*Gauge, ss *Streams) int {
 	head := " sensordemo - " + title
-	keys := "q quit  c color  ? help "
+	keys := "q quit  c " + palName + "  ? help "
 	v.Text(0, 0, head, 250)
 	if len(head)+len(keys) < v.W {
 		v.Text(v.W-len(keys), 0, keys, 244)

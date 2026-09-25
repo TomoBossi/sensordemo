@@ -203,7 +203,8 @@ func (f *fluid) Draw(v *View, ss *Streams, t, dt float64) {
 	// accelerometer reads the reaction to gravity, so gravity is -a.
 	gx, gy := 0.0, 0.0
 	if r := ss.Get("accelerometer").Read(); r.OK && len(r.V) >= 2 {
-		gx, gy = -r.V[0]*fluidGravity, r.V[1]*fluidGravity
+		a := toScreen(ss, r.V)
+		gx, gy = -a[0]*fluidGravity, a[1]*fluidGravity
 	}
 	if f.kick > 0 { // splash: throw everything up and sideways
 		for i := range f.px {

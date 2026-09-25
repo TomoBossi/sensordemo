@@ -97,7 +97,8 @@ Full-terminal ASCII demos of the phone's sensors, fed by sensord. Give a demo
 name, or one or more sensors (names or types from "sensord list"): sensors map
 to the demo that uses them, or to the scope, which shows any sensor.
 
-Keys: q quit, c toggle color, ? help for the current demo.
+Keys: q quit, c cycle colors (gray, native, amber, green, ice, fire,
+violet), ? help for the current demo. --color starts in native colors.
 `)
 }
 
@@ -171,6 +172,16 @@ func main() {
 	}
 }
 
+// screenGauge subscribes to the display rotation, which every demo that
+// uses orientation needs, and shows it in the data strip. Older sensord
+// versions don't have it; then the screen is assumed upright.
+func screenGauge(ss *Streams) []*Gauge {
+	if _, err := ss.Subscribe("display_rotation", 0); err != nil {
+		return nil
+	}
+	return []*Gauge{{Spec: "display_rotation", Label: "screen", Unit: "deg", Scale: &Linear{Min: 0, Max: 270}}}
+}
+
 func run(arg string, color bool) error {
 	ss, err := OpenStreams()
 	if err != nil {
@@ -186,6 +197,7 @@ func run(arg string, color bool) error {
 	if err != nil {
 		return err
 	}
+	gauges = append(gauges, screenGauge(ss)...)
 
 	t, err := OpenTerminal()
 	if err != nil {
@@ -205,6 +217,10 @@ func run(arg string, color bool) error {
 	}
 	var f Frame
 	help := false
+	pal := 0 // gray
+	if color {
+		pal = 1 // native
+	}
 	start, last := time.Now(), time.Now()
 	tick := time.NewTicker(time.Second / 30)
 	defer tick.Stop()
@@ -215,7 +231,7 @@ func run(arg string, color bool) error {
 			case 'q', 3, 4: // q, Ctrl-C, Ctrl-D
 				return nil
 			case 'c':
-				color = !color
+				pal = (pal + 1) % len(palettes)
 			case '?':
 				help = !help
 			default:
@@ -225,13 +241,13 @@ func run(arg string, color bool) error {
 		case now := <-tick.C:
 			w, h := t.Size()
 			f.Resize(w, h)
-			hudH := DrawHUD(f.View(0, 0, w, h), title, gauges, ss)
+			hudH := DrawHUD(f.View(0, 0, w, h), title, palettes[pal].name, gauges, ss)
 			demo.Draw(f.View(0, hudH, w, h-hudH), ss, now.Sub(start).Seconds(), now.Sub(last).Seconds())
 			if help {
 				drawHelp(f.View(0, 0, w, h), e, demo.Help())
 			}
 			last = now
-			f.Flush(t.out, color)
+			f.Flush(t.out, &palettes[pal])
 		}
 	}
 }
@@ -259,12 +275,13 @@ func snap(arg string, w, h int, mock string, frames int) error {
 	if err != nil {
 		return err
 	}
+	gauges = append(gauges, screenGauge(ss)...)
 	var f Frame
 	start := time.Now()
 	for i := 0; i < frames; i++ {
 		time.Sleep(time.Second / 30)
 		f.Resize(w, h)
-		hudH := DrawHUD(f.View(0, 0, w, h), e.name, gauges, ss)
+		hudH := DrawHUD(f.View(0, 0, w, h), e.name, "gray", gauges, ss)
 		demo.Draw(f.View(0, hudH, w, h-hudH), ss, time.Since(start).Seconds(), 1.0/30)
 	}
 	for y := 0; y < f.H; y++ {
@@ -275,13 +292,18 @@ func snap(arg string, w, h int, mock string, frames int) error {
 
 func drawHelp(v *View, e *entry, lines []string) {
 	lines = append([]string{e.name + ": " + e.desc, ""}, lines...)
-	lines = append(lines, "", "q quit   c color   ? close this")
-	bw := 0
+	lines = append(lines, "", "q quit   c colors   ? close this")
+	inner := max(10, min(v.W-4, 56))
+	var wrapped []string
 	for _, l := range lines {
+		wrapped = append(wrapped, wrap(l, inner)...)
+	}
+	bw := 0
+	for _, l := range wrapped {
 		bw = max(bw, len(l))
 	}
 	bw = min(bw+4, v.W)
-	bh := min(len(lines)+2, v.H)
+	bh := min(len(wrapped)+2, v.H)
 	x0, y0 := (v.W-bw)/2, (v.H-bh)/2
 	for y := 0; y < bh; y++ {
 		for x := 0; x < bw; x++ {
@@ -297,9 +319,36 @@ func drawHelp(v *View, e *entry, lines []string) {
 			v.Set(x0+x, y0+y, c, 250)
 		}
 	}
-	for i, l := range lines {
+	for i, l := range wrapped {
 		if i+1 < bh-1 {
-			v.Text(x0+2, y0+1+i, l[:min(len(l), bw-4)], 252)
+			v.Text(x0+2, y0+1+i, l, 252)
 		}
 	}
+}
+
+// wrap splits s into lines of at most n characters at spaces, keeping any
+// leading indentation on continuation lines.
+func wrap(s string, n int) []string {
+	if len(s) <= n {
+		return []string{s}
+	}
+	indent := len(s) - len(strings.TrimLeft(s, " "))
+	var out []string
+	line := ""
+	for _, w := range strings.Fields(s) {
+		switch {
+		case line == "":
+			line = strings.Repeat(" ", indent) + w
+		case len(line)+1+len(w) <= n:
+			line += " " + w
+		default:
+			out = append(out, line)
+			line = strings.Repeat(" ", indent) + w
+		}
+		for len(line) > n { // a single word longer than the line
+			out = append(out, line[:n])
+			line = line[n:]
+		}
+	}
+	return append(out, line)
 }

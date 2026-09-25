@@ -55,7 +55,7 @@ func (c *compass) Draw(v *View, ss *Streams, t, dt float64) {
 	if R, ok := FromRotationVector(r.V); ok && r.OK {
 		// The top of the phone (device +y) in world coordinates (x east,
 		// y north); its angle from north is the heading.
-		h := Heading(R)
+		h := Heading(R.Mul(screenFrame(ss)))
 		if !c.has {
 			c.heading, c.has = h, true
 		}

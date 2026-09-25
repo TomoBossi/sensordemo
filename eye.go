@@ -73,7 +73,8 @@ func (e *eye) Draw(v *View, ss *Streams, t, dt float64) {
 	if a := ss.Get("accelerometer"); a != nil {
 		if r := a.Read(); r.OK && len(r.V) >= 2 {
 			// gravity in screen coords is (-ax, +ay); look toward it
-			tx, ty := math.Max(-1, math.Min(1, -r.V[0]/6)), math.Max(-1, math.Min(1, (r.V[1]-6)/5))
+			g := toScreen(ss, r.V)
+			tx, ty := math.Max(-1, math.Min(1, -g[0]/6)), math.Max(-1, math.Min(1, (g[1]-6)/5))
 			e.lookX += (tx - e.lookX) * math.Min(1, dt*6)
 			e.lookY += (ty - e.lookY) * math.Min(1, dt*6)
 		}

@@ -59,9 +59,9 @@ func (v *View) Text(x, y int, s string, fg uint8) {
 	}
 }
 
-// Flush draws the whole frame in one write. Color escapes are emitted only
-// where the color changes, and not at all when color is off.
-func (f *Frame) Flush(w interface{ Write([]byte) (int, error) }, color bool) {
+// Flush draws the whole frame in one write, recolored by the palette. Color
+// escapes are emitted only where the color changes.
+func (f *Frame) Flush(w interface{ Write([]byte) (int, error) }, pal *palette) {
 	b := &f.buf
 	b.Reset()
 	b.WriteString("\x1b[H")
@@ -72,8 +72,8 @@ func (f *Frame) Flush(w interface{ Write([]byte) (int, error) }, color bool) {
 		}
 		row := f.chars[y*f.W : (y+1)*f.W]
 		for x, c := range row {
-			if color {
-				if fg := f.fg[y*f.W+x]; fg != cur && c != ' ' {
+			if pal != nil {
+				if fg := pal.Map(f.fg[y*f.W+x]); fg != cur && c != ' ' {
 					cur = fg
 					if fg == 0 {
 						b.WriteString("\x1b[39m")
@@ -87,7 +87,7 @@ func (f *Frame) Flush(w interface{ Write([]byte) (int, error) }, color bool) {
 			b.WriteByte(c)
 		}
 	}
-	if color && cur != 0 {
+	if pal != nil && cur != 0 {
 		b.WriteString("\x1b[39m")
 	}
 	w.Write(b.Bytes())

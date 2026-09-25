@@ -100,6 +100,10 @@ func (d *donut) Draw(v *View, ss *Streams, t, dt float64) {
 	live := false
 	if r := ss.Get(d.source).Read(); r.OK {
 		if R, ok := FromRotationVector(r.V); ok {
+			// Work in the screen's frame, so a rotated Termux still maps
+			// "up" on the phone to up on the screen. The reference is kept
+			// in world terms, so rotating mid-demo doesn't move the donut.
+			R = R.Mul(screenFrame(ss))
 			// Sensor fusion needs a moment to converge after the sensor
 			// powers on; take the reference from a settled reading.
 			if d.firstCount == 0 {

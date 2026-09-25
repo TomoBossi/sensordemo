@@ -43,8 +43,9 @@ var mockSensors = []proto.Sensor{
 	{Name: "FLIP_TWIST", Type: "flip_twist", Mode: "one-shot", Wakeup: true},
 	{Name: "FLIP", Type: "flip", Mode: "on-change", Wakeup: true},
 	{Name: "SIGNIFICANT_MOVE", Type: "significant_move", Mode: "one-shot", Wakeup: true},
-	{Name: "location", Type: "location", MaxHz: 10, Mode: "continuous", Default: true, Wakeup: true},
-	{Name: "gps", Type: "gps", MaxHz: 10, Mode: "continuous", Default: true, Wakeup: true},
+	{Name: "location", Type: "location", MaxHz: 1, Mode: "continuous", Default: true, Wakeup: true},
+	{Name: "gps", Type: "gps", MaxHz: 1, Mode: "continuous", Default: true, Wakeup: true},
+	{Name: "display_rotation", Type: "display_rotation", Mode: "on-change", Default: true, Wakeup: true},
 }
 
 // OpenMock returns Streams that serve fixed readings instead of sensord.

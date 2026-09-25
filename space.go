@@ -112,6 +112,7 @@ func (s *space) Draw(v *View, ss *Streams, t, dt float64) {
 	R := Identity()
 	if r := ss.Get("game_rotation_vector").Read(); r.OK {
 		R, _ = FromRotationVector(r.V)
+		R = R.Mul(screenFrame(ss)) // look through the screen as it is displayed
 	} else {
 		// no orientation yet: stand upright looking north, slowly turning
 		R = RotZ(t * 0.2).Mul(RotX(math.Pi / 2))
