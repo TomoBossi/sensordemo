@@ -32,8 +32,8 @@ func (p *palette) Map(c uint8) uint8 {
 
 var cubeLevels = [6]float64{0, 95, 135, 175, 215, 255}
 
-// luminance of an xterm 256-color index, 0..1, stretched a little so dim
-// colors stay visible.
+// luminance of an xterm 256-color index, 0..1, with a gamma that keeps dark
+// colors dark, so demos' shading survives the remap.
 func luminance(c uint8) float64 {
 	var r, g, b float64
 	switch {
@@ -49,5 +49,5 @@ func luminance(c uint8) float64 {
 		r, g, b = v, v, v
 	}
 	l := (0.2126*r + 0.7152*g + 0.0722*b) / 255
-	return math.Min(1, math.Sqrt(l)*1.05)
+	return math.Pow(l, 1.4)
 }
