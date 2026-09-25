@@ -7,7 +7,6 @@ import (
 	"os"
 	"sort"
 	"strings"
-	"text/tabwriter"
 	"time"
 )
 
@@ -90,33 +89,36 @@ func covers(have, want []string) bool {
 }
 
 func usage() {
-	fmt.Print(`usage: sensordemo [--color] DEMO | SENSOR[,SENSOR...]
-       sensordemo list
+	width := termWidth()
+	fmt.Println("usage:")
+	fmt.Print(columns([][2]string{
+		{"  sensordemo [--color] DEMO", "a demo by name"},
+		{"  sensordemo [--color] SENSOR[,SENSOR...]", "the demo that uses these sensors"},
+		{"  sensordemo list", "the demos"},
+	}, width))
+	fmt.Println()
+	fmt.Println(reflow(`Full-terminal ASCII demos of the phone's sensors, fed by sensord. Sensors are names or types from "sensord list"; they map to the demo that uses them, or to the scope, which shows any sensor.
 
-Full-terminal ASCII demos of the phone's sensors, fed by sensord. Give a demo
-name, or one or more sensors (names or types from "sensord list"): sensors map
-to the demo that uses them, or to the scope, which shows any sensor.
+Keys:
+  q   quit
+  c   cycle colors: gray, native, amber, green, ice, fire, violet
+  ?   help for the current demo
 
-Keys: q quit, c cycle colors (gray, native, amber, green, ice, fire,
-violet), ? help for the current demo. --color starts in native colors.
-`)
+--color starts in the demo's native colors instead of gray.`, width))
 }
 
 func list() {
 	sort.Slice(registry, func(i, j int) bool { return registry[i].name < registry[j].name })
-	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
-	fmt.Fprintln(w, "DEMO\tSENSORS\tWHAT IT SHOWS")
+	width := termWidth()
 	for _, e := range registry {
-		uses := strings.Join(e.uses, ",")
+		uses := strings.Join(e.uses, ", ")
 		if uses == "" {
-			uses = "(any)"
+			uses = "any sensor"
 		}
-		if len(uses) > 30 {
-			uses = uses[:27] + "..."
-		}
-		fmt.Fprintf(w, "%s\t%s\t%s\n", e.name, uses, e.desc)
+		fmt.Println(e.name)
+		fmt.Println(strings.Join(wrapWords(e.desc, width, 4, 4), "\n"))
+		fmt.Println(strings.Join(wrapWords("sensors: "+uses, width, 4, 13), "\n"))
 	}
-	w.Flush()
 }
 
 func main() {
