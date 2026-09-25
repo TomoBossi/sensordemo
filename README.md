@@ -11,10 +11,11 @@ sensordemo donut              # a demo by name
 sensordemo gyroscope          # a sensor: picks the demo that uses it
 sensordemo light,proximity    # several sensors: a demo that uses all of them,
                               # or the scope, which shows anything
-sensordemo --color fluid      # characters stay ASCII; color is optional
+sensordemo --gray fluid       # start in grayscale (c cycles palettes)
 ```
 
-Keys in every demo: `q` quit, `c` toggle color, `?` help for that demo. The
+Keys in every demo: `q` quit, `c` cycle colors (each demo's own palette first,
+then gray, amber, green, ice, fire, violet), `?` help for that demo. The
 picture follows the terminal size frame by frame, so opening the keyboard or
 rotating the phone just re-lays it out.
 
@@ -25,7 +26,8 @@ rotating the phone just re-lays it out.
 | `donut` | game rotation vector (+ gyroscope) | the donut.c torus stays still in the room; turn the phone to see it from other sides. `r` recenter, `a` auto-spin, `+`/`-` zoom |
 | `fluid` | accelerometer | tilt to pour, shake for waves, lay flat for zero-g. `s` splash, `r` refill, `+`/`-` amount |
 | `space` | game rotation vector (+ step detector) | the screen is a window into a ray-marched world (pillars, trees, blocks, portals, crystals, a rare monolith; a sun that lights and shadows them, a ringed planet, a moon, fixed stars); turn to look around. `w`/`s` step, `g` glide forward, `p` step mode (real steps move you; its bar beats with each step) |
-| `navball` | rotation vector + magnetometer | a 3D compass ball as in aircraft: the world (sky, ground, horizon, N E S W, elevation lines) seen from the phone; its center is where the long axis points; heading, pitch and roll below |
+| `navball` | rotation vector + magnetometer | a 3D compass ball: the world (sky, ground, horizon, N E S W, elevation lines) around you; hold the phone up and the center is the direction you face. `v` switches to the aircraft view (center = long axis) |
+| `compass` | rotation vector + magnetometer | a flat compass rose that turns so N points north, following the phone's long axis however it is rolled; the heading in big digits |
 | `map` | location + rotation vector | OpenStreetMap around you in ASCII, turning with the phone. `+`/`-` zoom, `n` north-up |
 | `gestures` | Moto gestures, step detector | chop, twist, flip, lift or walk: each burst of big letters is one sensor event |
 | `eye` | proximity (+ accelerometer) | cover the top of the phone and it closes; tilt and it looks that way |

@@ -9,7 +9,7 @@ func init() {
 	register(entry{
 		name: "navball",
 		desc: "a 3D compass ball, as in aircraft: heading, pitch and roll of the phone at a glance",
-		uses: []string{"magnetic_field", "geomagnetic_rotation_vector"},
+		uses: []string{"geomagnetic_rotation_vector"},
 		new:  func(specs []string) Demo { return &navball{} },
 	})
 }
@@ -23,6 +23,7 @@ func init() {
 // vector, which Android fuses from the magnetometer, gyroscope and
 // accelerometer.
 type navball struct {
+	nose bool // view along the long axis instead of out of the back
 	has  bool
 	pose Mat3 // smoothed screen-to-world matrix
 	// per-cell sky directions of the last frame, for grid edge detection
@@ -43,20 +44,31 @@ func (c *navball) Setup(ss *Streams) ([]*Gauge, error) {
 
 func (c *navball) Help() []string {
 	return []string{
-		"A navball: the ball is the world around you (sky above, ground below, N E S W on the horizon), and its center, marked -=o=-, is where the phone's long axis points.",
-		"Turn the phone to bring other directions to the center; tip it up for the sky; roll it and the horizon tilts.",
+		"The ball is the world around you: sky above, ground below, N E S W on the horizon, elevation lines every 30 degrees.",
+		"Hold the phone up in front of you: the center, marked -=o=-, is the direction you face, as if looking through the phone. Turn around, look up or down, tilt it.",
+		"v  switch to the navigation view: the center follows the phone's long axis instead (best with the phone flat)",
 		"If it drifts, wave the phone in a figure 8 to recalibrate the magnetometer; magnets and metal nearby bend it too.",
 	}
 }
 
-func (c *navball) Key(k byte) {}
+func (c *navball) Key(k byte) {
+	if k == 'v' {
+		c.nose = !c.nose
+	}
+}
 
-// camera returns the ball's viewing basis in world coordinates: forward is
-// the phone's long axis (screen up), right is the screen's right, and up is
-// out of the screen. As in a camera, (right, up, forward) is left-handed:
-// the ball is seen from the inside, so east sits to the right of north.
-func camera(R Mat3) (right, up, fwd Vec3) {
-	return R.Apply(Vec3{1, 0, 0}), R.Apply(Vec3{0, 0, 1}), R.Apply(Vec3{0, 1, 0})
+// camera returns the ball's viewing basis in world coordinates. By default
+// it is the person's view: forward is out of the back of the phone and up is
+// the screen's up, so a phone held upright shows sky above and ground below
+// with the direction you face in the center. In nose view, forward is the
+// long axis and up is out of the screen (the aircraft convention, natural
+// with the phone flat). Either way (right, up, forward) is left-handed, as in
+// a camera: the ball is seen from the inside, so east is right of north.
+func camera(R Mat3, nose bool) (right, up, fwd Vec3) {
+	if nose {
+		return R.Apply(Vec3{1, 0, 0}), R.Apply(Vec3{0, 0, 1}), R.Apply(Vec3{0, 1, 0})
+	}
+	return R.Apply(Vec3{1, 0, 0}), R.Apply(Vec3{0, 1, 0}), R.Apply(Vec3{0, 0, -1})
 }
 
 func (c *navball) Draw(v *View, ss *Streams, t, dt float64) {
@@ -77,7 +89,7 @@ func (c *navball) Draw(v *View, ss *Streams, t, dt float64) {
 		v.Text((v.W-len(msg))/2, v.H/2, msg, 244)
 		return
 	}
-	right, up, fwd := camera(c.pose)
+	right, up, fwd := camera(c.pose, c.nose)
 
 	// Ball geometry: rows are twice as tall as columns.
 	rr := math.Min(float64(v.H-4)/2, float64(v.W)/4-1) // radius in rows
@@ -167,9 +179,21 @@ func (c *navball) Draw(v *View, ss *Streams, t, dt float64) {
 	v.Text(int(cx)-2, int(cy), "-=o=-", 226)
 
 	// Readout under the ball.
-	heading := math.Mod(math.Round(Heading(c.pose)*180/math.Pi)+360, 360)
+	h := math.Atan2(fwd[0], fwd[1]) // where the center points
+	if math.Hypot(fwd[0], fwd[1]) < 0.05 {
+		h = Heading(c.pose) // center at a pole: fall back to the phone's heading
+	}
+	heading := math.Mod(math.Round(h*180/math.Pi)+360, 360)
 	pitch := math.Asin(math.Max(-1, math.Min(1, fwd[2]))) * 180 / math.Pi
 	roll := math.Atan2(-right[2], up[2]) * 180 / math.Pi
+	// Round, and drop the sign of negative zero so it doesn't print "-00".
+	pitch, roll = math.Round(pitch)+0, math.Round(roll)+0
+	if pitch == 0 {
+		pitch = 0
+	}
+	if roll == 0 {
+		roll = 0
+	}
 	name := points[int(math.Mod(heading+22.5, 360)/45)%len(points)]
 	line := fmt.Sprintf("heading %03.0f %-2s   pitch %+03.0f   roll %+04.0f", heading, name, pitch, roll)
 	if len(line) > v.W {
@@ -178,8 +202,6 @@ func (c *navball) Draw(v *View, ss *Streams, t, dt float64) {
 	ly := min(int(cy+rr+1.5), v.H-1)
 	v.Text((v.W-len(line))/2, ly, line, 250)
 }
-
-var points = []string{"N", "NE", "E", "SE", "S", "SW", "W", "NW"}
 
 // crosses reports whether a grid line of the given step (0: only the value
 // 0) lies between cell (x, y) and its right or lower neighbor. wrap is the

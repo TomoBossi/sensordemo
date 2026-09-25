@@ -92,8 +92,8 @@ func usage() {
 	width := termWidth()
 	fmt.Println("usage:")
 	fmt.Print(columns([][2]string{
-		{"  sensordemo [--color] DEMO", "a demo by name"},
-		{"  sensordemo [--color] SENSOR[,SENSOR...]", "the demo that uses these sensors"},
+		{"  sensordemo [--gray] DEMO", "a demo by name"},
+		{"  sensordemo [--gray] SENSOR[,SENSOR...]", "the demo that uses these sensors"},
 		{"  sensordemo list", "the demos and the sensors they use"},
 	}, width))
 	fmt.Println("\ndemos:")
@@ -108,10 +108,10 @@ func usage() {
 
 Keys:
   q   quit
-  c   cycle colors: gray, native, amber, green, ice, fire, violet
+  c   cycle colors: native (the demo's own), gray, amber, green, ice, fire, violet
   ?   help for the current demo
 
---color starts in the demo's native colors instead of gray.`, width))
+--gray starts in grayscale.`, width))
 }
 
 func list() {
@@ -129,7 +129,7 @@ func list() {
 }
 
 func main() {
-	color := false
+	gray := false
 	snapshot, mock, frames := "", "", 30
 	var args []string
 	for i := 1; i < len(os.Args); i++ {
@@ -149,8 +149,9 @@ func main() {
 				fmt.Sscanf(os.Args[i+1], "%d", &frames)
 				i++
 			}
-		case "--color", "-c":
-			color = true
+		case "--gray", "-g":
+			gray = true
+		case "--color", "-c": // the default now; kept for old habits
 		case "-h", "--help", "help":
 			usage()
 			return
@@ -175,7 +176,7 @@ func main() {
 		}
 		return
 	}
-	if err := run(args[0], color); err != nil {
+	if err := run(args[0], gray); err != nil {
 		fmt.Fprintln(os.Stderr, "sensordemo:", err)
 		os.Exit(1)
 	}
@@ -191,7 +192,7 @@ func screenGauge(ss *Streams) []*Gauge {
 	return []*Gauge{{Spec: "display_rotation", Label: "screen", Unit: "deg", Scale: &Linear{Min: 0, Max: 270}}}
 }
 
-func run(arg string, color bool) error {
+func run(arg string, gray bool) error {
 	ss, err := OpenStreams()
 	if err != nil {
 		return err
@@ -226,9 +227,9 @@ func run(arg string, color bool) error {
 	}
 	var f Frame
 	help := false
-	pal := 0 // gray
-	if color {
-		pal = 1 // native
+	pal := 0 // the demo's own colors
+	if gray {
+		pal = 1
 	}
 	start, last := time.Now(), time.Now()
 	tick := time.NewTicker(time.Second / 30)
@@ -290,7 +291,7 @@ func snap(arg string, w, h int, mock string, frames int) error {
 	for i := 0; i < frames; i++ {
 		time.Sleep(time.Second / 30)
 		f.Resize(w, h)
-		hudH := DrawHUD(f.View(0, 0, w, h), e.name, "gray", gauges, ss)
+		hudH := DrawHUD(f.View(0, 0, w, h), e.name, "native", gauges, ss)
 		demo.Draw(f.View(0, hudH, w, h-hudH), ss, time.Since(start).Seconds(), 1.0/30)
 	}
 	for y := 0; y < f.H; y++ {
