@@ -1,0 +1,70 @@
+# sensordemo
+
+Full-terminal ASCII demos of the phone's sensors, fed by
+[sensord](../sensord). Each one is meant to be fun to look at, and it's also
+a sensor check: a data strip on top shows the live values on bars, along with
+the rate actually delivered.
+
+```sh
+sensordemo list               # the demos
+sensordemo donut              # a demo by name
+sensordemo gyroscope          # a sensor: picks the demo that uses it
+sensordemo light,proximity    # several sensors: a demo that uses all of them,
+                              # or the scope, which shows anything
+sensordemo --color fluid      # characters stay ASCII; color is optional
+```
+
+Keys in every demo: `q` quit, `c` toggle color, `?` help for that demo. The
+picture follows the terminal size frame by frame, so opening the keyboard or
+rotating the phone just re-lays it out.
+
+## Demos
+
+| Demo | Sensors | What you do |
+|---|---|---|
+| `donut` | game rotation vector (+ gyroscope) | the donut.c torus stays still in the room; turn the phone to see it from other sides. `r` recenter, `a` auto-spin, `+`/`-` zoom |
+| `fluid` | accelerometer | tilt to pour, shake for waves, lay flat for zero-g. `s` splash, `r` refill, `+`/`-` amount |
+| `space` | game rotation vector + step detector | the screen is a window into a ray-marched world; turn to look around, walk to move. `w`/`s` step |
+| `compass` | rotation vector + magnetometer | a rose that turns so N points north; the heading in big digits |
+| `map` | location + rotation vector | OpenStreetMap around you in ASCII, turning with the phone. `+`/`-` zoom, `n` north-up |
+| `gestures` | Moto gestures, step detector | chop, twist, flip, lift or walk: each burst of big letters is one sensor event |
+| `eye` | proximity (+ accelerometer) | cover the top of the phone and it closes; tilt and it looks that way |
+| `sky` | light | cover the sensor for night (moon, stars, lit windows), light it for day |
+| `scope` | any | an oscilloscope: every value of any sensors as scrolling traces. `space` pause |
+
+## Data strip
+
+One line per value: label, number, unit, bar, and the stream's rate.
+
+- Signed values (acceleration, rotation) sit on a bar centered on zero that
+  widens to fit what it has seen.
+- Light uses an asymptotic bar, lux/(lux+300): typical indoor light gets most
+  of the bar, and sunlight crowds toward the end without running off.
+- The step counter starts at its first value and counts up from there.
+
+## The map and privacy
+
+`map` downloads streets, buildings, water and parks from the public Overpass
+API (overpass-api.de). That request contains your approximate position: the
+center and radius of the area, a few hundred meters. Results are cached in
+`~/.cache/sensordemo/osm/`, so revisiting an area doesn't ask again. Delete
+that directory to clear it. Map data © OpenStreetMap contributors, ODbL.
+
+## Building
+
+```sh
+go build -o $PREFIX/bin/sensordemo .
+```
+
+The sensord client comes from `../sensord` via a `replace` in go.mod.
+
+To check a demo without the phone, `--snapshot WxH` renders about a second
+off-screen and prints the last frame, and `--mock` feeds it fixed readings:
+
+```sh
+sensordemo --snapshot 70x30 --mock 'accelerometer=6,6,3' fluid
+sensordemo --snapshot 70x30 --mock 'orient=45,0,0' compass       # yaw,pitch,roll
+sensordemo --snapshot 70x30 --mock 'CHOP_CHOP=1' gestures
+```
+
+`--frames N` renders longer (30 frames is about a second).
