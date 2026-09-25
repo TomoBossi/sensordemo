@@ -230,7 +230,7 @@ func (m *mapDemo) Draw(v *View, ss *Streams, t, dt float64) {
 	ax, ay := int(cx+2.5*math.Sin(ha)+0.5), int(cy-1.25*math.Cos(ha)+0.5)
 	v.Set(ax, ay, arrowChar(ha), 196)
 
-	status := fmt.Sprintf(" %.0f m/col  %s", m.mpc, map[bool]string{true: "heading-up", false: "north-up"}[m.headingUp])
+	status := fmt.Sprintf(" %.0f m/col", m.mpc)
 	switch {
 	case loading:
 		status += "  loading map..."
