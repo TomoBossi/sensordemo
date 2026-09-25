@@ -80,7 +80,8 @@ func gaugesFor(s *Stream, limit int) []*Gauge {
 		if n > 1 || label == "v0" {
 			label = prefix + " " + label
 		}
-		out = append(out, &Gauge{Spec: s.Spec, Index: i, Label: label, Unit: unit, Scale: scale})
+		out = append(out, &Gauge{Spec: s.Spec, Index: i, Label: label, Unit: unit, Scale: scale,
+			Binary: s.Info.Type == "proximity"})
 	}
 	return out
 }

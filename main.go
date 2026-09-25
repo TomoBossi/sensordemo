@@ -183,13 +183,12 @@ func main() {
 }
 
 // screenGauge subscribes to the display rotation, which every demo that
-// uses orientation needs, and shows it in the data strip. Older sensord
-// versions don't have it; then the screen is assumed upright.
+// uses orientation needs. It is not shown: it is plain from the screen
+// itself. Older sensord versions don't have it; then the screen is assumed
+// upright.
 func screenGauge(ss *Streams) []*Gauge {
-	if _, err := ss.Subscribe("display_rotation", 0); err != nil {
-		return nil
-	}
-	return []*Gauge{{Spec: "display_rotation", Label: "screen", Unit: "deg", Scale: &Linear{Min: 0, Max: 270}}}
+	ss.Subscribe("display_rotation", 0)
+	return nil
 }
 
 func run(arg string, gray bool) error {

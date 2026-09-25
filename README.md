@@ -30,7 +30,7 @@ rotating the phone just re-lays it out.
 | `compass` | rotation vector + magnetometer | a flat compass rose that turns so N points north, following the phone's long axis however it is rolled; the heading in big digits |
 | `map` | location + rotation vector | OpenStreetMap around you in ASCII, turning with the phone. `+`/`-` zoom, `n` north-up |
 | `gestures` | Moto gestures, step detector | chop, twist, flip, lift or walk: each burst of big letters is one sensor event |
-| `eye` | proximity (+ accelerometer) | cover the top of the phone and it closes; tilt and it looks that way |
+| `eye` | proximity + light (+ accelerometer) | cover the top of the phone and it closes; tilt and it looks that way; light brightens it, shrinks the pupil and grows the glint, and direct sun makes it squint |
 | `sky` | light | cover the sensor for night (moon, stars, lit windows), light it for day |
 | `scope` | any | an oscilloscope: every value of any sensors as scrolling traces. `space` pause |
 
@@ -51,6 +51,9 @@ One line per value: label, number, unit, bar, and the stream's rate.
 - Light uses an asymptotic bar, lux/(lux+300): typical indoor light gets most
   of the bar, and sunlight crowds toward the end without running off.
 - The step counter starts at its first value and counts up from there.
+- Event sensors (the step detector) beat: the bar fills on each event and
+  drains. Two-state sensors (proximity, which on this phone reports only 0
+  or 5 cm) show as an on/off NEAR / far bar.
 
 ## The map and privacy
 

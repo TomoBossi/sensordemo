@@ -77,12 +77,13 @@ func (s *Asymptotic) Pos(v float64) float64 {
 
 // Gauge is one line of the data strip: a value of a stream on a bar.
 type Gauge struct {
-	Spec  string // stream key
-	Index int    // which value of the reading
-	Label string
-	Unit  string
-	Scale Scale
-	Pulse bool // event sensor: the bar flashes full on each event, then fades
+	Spec   string // stream key
+	Index  int    // which value of the reading
+	Label  string
+	Unit   string
+	Scale  Scale
+	Pulse  bool // event sensor: the bar flashes full on each event, then fades
+	Binary bool // two-state sensor (proximity here): shown as on/off
 }
 
 // DrawHUD draws the title line and one line per gauge, and returns how many
@@ -112,6 +113,8 @@ func DrawHUD(v *View, title, palName string, gauges []*Gauge, ss *Streams) int {
 		}
 		if g.Pulse {
 			drawPulse(v, row, g, r)
+		} else if g.Binary {
+			drawBinary(v, row, g, r)
 		} else {
 			drawGauge(v, row, g, r, hz)
 		}
@@ -131,6 +134,42 @@ func rateText(s *Stream, r Reading) string {
 		return fmt.Sprintf("%.0fHz", r.Hz)
 	default:
 		return fmt.Sprintf("%d ev", r.Count)
+	}
+}
+
+// drawBinary shows a two-state sensor as a switch: a solid NEAR bar, or an
+// empty "far". This phone's proximity sensor reports only 0 or its maximum.
+func drawBinary(v *View, row int, g *Gauge, r Reading) {
+	num := "      --"
+	state := ""
+	on := false
+	if r.OK && g.Index < len(r.V) {
+		num = fmt.Sprintf("%8.1f", r.V[g.Index])
+		on = r.V[g.Index] < 1
+		state = "far"
+		if on {
+			state = "NEAR"
+		}
+	}
+	left := fmt.Sprintf(" %-10.10s%s %-5.5s ", g.Label, num, g.Unit)
+	barW := v.W - len(left) - 11
+	v.Text(0, row, left, 250)
+	if barW < 6 {
+		return
+	}
+	x0 := len(left)
+	v.Set(x0, row, '[', 240)
+	v.Set(x0+barW+1, row, ']', 240)
+	fill, col := byte('-'), uint8(238)
+	if on {
+		fill, col = '#', 203
+	}
+	for i := 0; i < barW; i++ {
+		v.Set(x0+1+i, row, fill, col)
+	}
+	if state != "" {
+		label := " " + state + " "
+		v.Text(x0+1+(barW-len(label))/2, row, label, map[bool]uint8{true: 231, false: 244}[on])
 	}
 }
 
