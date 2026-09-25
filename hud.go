@@ -88,8 +88,13 @@ type Gauge struct {
 
 // DrawHUD draws the title line and one line per gauge, and returns how many
 // rows it used.
-func DrawHUD(v *View, title, palName string, gauges []*Gauge, ss *Streams) int {
+// fps is the frame rate actually drawn (0 = unknown), shown in the title; the
+// rates on the gauge lines are how often each sensor delivers data.
+func DrawHUD(v *View, title, palName string, fps float64, gauges []*Gauge, ss *Streams) int {
 	head := " sensordemo - " + title
+	if fps > 0 {
+		head += fmt.Sprintf("  %.0f fps", fps)
+	}
 	keys := "q quit  c " + palName + "  ? help "
 	v.Text(0, 0, head, 250)
 	if len(head)+len(keys) < v.W {

@@ -44,7 +44,11 @@ compass indoors. Low calibration asks for a figure 8.
 
 ## Data strip
 
-One line per value: label, number, unit, bar, and the stream's rate.
+The title line shows the frame rate actually drawn (`fps`). Below it, one line
+per value: label, number, unit, bar, and on the right how that sensor
+delivers data: `Hz` for steady streams (readings per second from sensord,
+independent of the frame rate), `ev` for sensors that report only on change
+or on events (the number of readings received so far).
 
 - Signed values (acceleration, rotation) sit on a bar centered on zero that
   widens to fit what it has seen.
@@ -54,6 +58,13 @@ One line per value: label, number, unit, bar, and the stream's rate.
 - Event sensors (the step detector) beat: the bar fills on each event and
   drains. Two-state sensors (proximity, which on this phone reports only 0
   or 5 cm) show as an on/off NEAR / far bar.
+
+## Speed
+
+The heavy demos (space, eye, navball) render their rows on all CPU cores,
+and fluid simulates at a normal screen's resolution and scales the picture
+up. So a smaller font gives more detail without slowing down: all demos hold
+30 fps at 150x90 cells on this phone.
 
 ## The map and privacy
 

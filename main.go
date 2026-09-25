@@ -231,6 +231,7 @@ func run(arg string, gray bool) error {
 		pal = 1
 	}
 	start, last := time.Now(), time.Now()
+	fps := 0.0
 	tick := time.NewTicker(time.Second / 30)
 	defer tick.Stop()
 	for {
@@ -250,7 +251,15 @@ func run(arg string, gray bool) error {
 		case now := <-tick.C:
 			w, h := t.Size()
 			f.Resize(w, h)
-			hudH := DrawHUD(f.View(0, 0, w, h), title, palettes[pal].name, gauges, ss)
+			// Frames actually drawn per second: when rendering is slower
+			// than the ticker, ticks are skipped and this drops.
+			if d := now.Sub(last).Seconds(); d > 0 {
+				if fps == 0 {
+					fps = 1 / d
+				}
+				fps += (1/d - fps) * 0.1
+			}
+			hudH := DrawHUD(f.View(0, 0, w, h), title, palettes[pal].name, fps, gauges, ss)
 			demo.Draw(f.View(0, hudH, w, h-hudH), ss, now.Sub(start).Seconds(), now.Sub(last).Seconds())
 			if help {
 				drawHelp(f.View(0, 0, w, h), e, demo.Help())
@@ -290,7 +299,7 @@ func snap(arg string, w, h int, mock string, frames int) error {
 	for i := 0; i < frames; i++ {
 		time.Sleep(time.Second / 30)
 		f.Resize(w, h)
-		hudH := DrawHUD(f.View(0, 0, w, h), e.name, "native", gauges, ss)
+		hudH := DrawHUD(f.View(0, 0, w, h), e.name, "native", 0, gauges, ss)
 		demo.Draw(f.View(0, hudH, w, h-hudH), ss, time.Since(start).Seconds(), 1.0/30)
 	}
 	for y := 0; y < f.H; y++ {

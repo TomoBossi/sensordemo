@@ -301,14 +301,14 @@ func (e *eye) Draw(v *View, ss *Streams, t, dt float64) {
 
 	camZ, tanX, tanY := eyeCamera(v.W, v.H)
 	cam := Vec3{0, 0, camZ}
-	for y := 0; y < v.H; y++ {
+	parallelRows(v.H, func(y int) {
 		for x := 0; x < v.W; x++ {
 			u := (2*(float64(x)+0.5)/float64(v.W) - 1) * tanX
 			w := (1 - 2*(float64(y)+0.5)/float64(v.H)) * tanY
 			dir := Vec3{u, w, -1}.Norm()
 			e.shade(v, x, y, cam, dir, lamp, fill, strength)
 		}
-	}
+	})
 	e.overlay(v, camZ, tanX, tanY)
 }
 

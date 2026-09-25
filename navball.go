@@ -111,7 +111,7 @@ func (c *navball) Draw(v *View, ss *Streams, t, dt float64) {
 	}
 
 	// First pass: the world direction behind every cell of the disc.
-	for y := 0; y < v.H; y++ {
+	parallelRows(v.H, func(y int) {
 		for x := 0; x < v.W; x++ {
 			i := y*v.W + x
 			px := (float64(x) + 0.5 - cx) / (2 * rr)
@@ -126,7 +126,7 @@ func (c *navball) Draw(v *View, ss *Streams, t, dt float64) {
 			c.el[i] = math.Asin(math.Max(-1, math.Min(1, d[2]))) * 180 / math.Pi
 			c.az[i] = math.Mod(math.Atan2(d[0], d[1])*180/math.Pi+decl+720, 360) // true azimuth
 		}
-	}
+	})
 
 	// Second pass: shade the sphere and draw grid lines where a cell and
 	// its right or lower neighbor fall on different sides of one.
@@ -135,7 +135,7 @@ func (c *navball) Draw(v *View, ss *Streams, t, dt float64) {
 	fill := []byte(".::-==++**")
 	el := func(i int) float64 { return c.el[i] }
 	az := func(i int) float64 { return c.az[i] }
-	for y := 0; y < v.H; y++ {
+	parallelRows(v.H, func(y int) {
 		for x := 0; x < v.W; x++ {
 			i := y*v.W + x
 			if !c.in[i] {
@@ -162,7 +162,7 @@ func (c *navball) Draw(v *View, ss *Streams, t, dt float64) {
 			}
 			v.Set(x, y, ch, col)
 		}
-	}
+	})
 
 	// Labels, where their directions face the viewer.
 	place := func(az, el float64, text string, col uint8) {

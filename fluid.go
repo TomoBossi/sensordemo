@@ -195,8 +195,13 @@ func (f *fluid) Draw(v *View, ss *Streams, t, dt float64) {
 	if v.W < 4 || v.H < 4 {
 		return
 	}
-	if f.w != v.W || f.h != v.H {
-		f.layout(v.W, v.H)
+	// Simulate on a grid no bigger than a normal screen's (70x40 cells) and
+	// draw it scaled up: a small font then gives a smoother picture of the
+	// same liquid instead of many more particles and a slower frame.
+	scale := math.Max(1, math.Sqrt(float64(v.W*v.H)/(70*40)))
+	gw, gh := int(math.Ceil(float64(v.W)/scale)), int(math.Ceil(float64(v.H)/scale))
+	if f.w != gw || f.h != gh {
+		f.layout(gw, gh)
 	}
 
 	// Screen x is device x; screen y runs down while device y runs up. The
@@ -217,10 +222,11 @@ func (f *fluid) Draw(v *View, ss *Streams, t, dt float64) {
 		f.step(gx, gy)
 	}
 
-	// Render: particle count and speed per cell, smoothed over neighbors so
-	// the body reads as a surface rather than noise. Density picks the
-	// character; speed picks the color (calm = deep blue, fast = foam).
-	n := v.W * v.H
+	// Render: particle count and speed per simulation cell, smoothed over
+	// neighbors so the body reads as a surface rather than noise, then
+	// sampled for every screen cell. Density picks the character; speed
+	// picks the color (calm = deep blue, fast = foam).
+	n := gw * gh
 	if len(f.count) != n {
 		f.count = make([]int, n)
 		f.speed = make([]float64, n)
@@ -231,35 +237,45 @@ func (f *fluid) Draw(v *View, ss *Streams, t, dt float64) {
 	}
 	for i := range f.px {
 		x, y := int(f.px[i]), int(f.py[i]/2)
-		if x >= 0 && y >= 0 && x < v.W && y < v.H {
-			c := y*v.W + x
+		if x >= 0 && y >= 0 && x < gw && y < gh {
+			c := y*gw + x
 			f.count[c]++
 			f.speed[c] += math.Hypot(f.px[i]-f.ox[i], f.py[i]-f.oy[i])
 		}
 	}
 	at := func(x, y int) float64 {
-		if x < 0 || y < 0 || x >= v.W || y >= v.H {
+		if x < 0 || y < 0 || x >= gw || y >= gh {
 			return 0
 		}
-		return float64(f.count[y*v.W+x])
+		return float64(f.count[y*gw+x])
 	}
-	for y := 0; y < v.H; y++ {
-		for x := 0; x < v.W; x++ {
-			f.dens[y*v.W+x] = (4*at(x, y) + 2*(at(x-1, y)+at(x+1, y)+at(x, y-1)+at(x, y+1)) +
+	for y := 0; y < gh; y++ {
+		for x := 0; x < gw; x++ {
+			f.dens[y*gw+x] = (4*at(x, y) + 2*(at(x-1, y)+at(x+1, y)+at(x, y-1)+at(x, y+1)) +
 				at(x-1, y-1) + at(x+1, y-1) + at(x-1, y+1) + at(x+1, y+1)) / 16
 		}
 	}
+	dens := func(x, y int) float64 {
+		x, y = max(0, min(x, gw-1)), max(0, min(y, gh-1))
+		return f.dens[y*gw+x]
+	}
 	for y := 0; y < v.H; y++ {
 		for x := 0; x < v.W; x++ {
-			c := y*v.W + x
-			d := f.dens[c]
+			// bilinear sample of the simulation grid
+			sx, sy := (float64(x)+0.5)/scale-0.5, (float64(y)+0.5)/scale-0.5
+			x0, y0 := int(math.Floor(sx)), int(math.Floor(sy))
+			fx, fy := sx-float64(x0), sy-float64(y0)
+			d := (dens(x0, y0)*(1-fx)+dens(x0+1, y0)*fx)*(1-fy) +
+				(dens(x0, y0+1)*(1-fx)+dens(x0+1, y0+1)*fx)*fy
 			if d < 0.25 {
 				continue
 			}
 			k := min(int(d*3.2), len(waterRamp)-1)
 			k = max(k, 1)
-			col := uint8(27) // deep blue
+			col := uint8(153) // spray between cells
+			c := max(0, min(int(sy+0.5), gh-1))*gw + max(0, min(int(sx+0.5), gw-1))
 			if f.count[c] > 0 {
+				col = 27 // deep blue
 				sp := f.speed[c] / float64(f.count[c])
 				switch {
 				case sp > 0.35:
@@ -271,8 +287,6 @@ func (f *fluid) Draw(v *View, ss *Streams, t, dt float64) {
 				case sp > 0.05:
 					col = 33
 				}
-			} else {
-				col = 153 // spray between cells
 			}
 			v.Set(x, y, waterRamp[k], col)
 		}

@@ -137,14 +137,14 @@ func (s *space) Draw(v *View, ss *Streams, t, dt float64) {
 	if len(s.sky) != v.W*v.H {
 		s.sky = make([]bool, v.W*v.H)
 	}
-	for y := 0; y < v.H; y++ {
+	parallelRows(v.H, func(y int) {
 		for x := 0; x < v.W; x++ {
 			u := (2*(float64(x)+0.5)/float64(v.W) - 1) * fov * aspect
 			w := (1 - 2*(float64(y)+0.5)/float64(v.H)) * fov
 			dir := R.Apply(Vec3{u, w, -1}.Norm())
 			s.sky[y*v.W+x] = s.cast(v, x, y, dir)
 		}
-	}
+	})
 
 	// Stars come from a fixed catalog, projected into the cells that show
 	// empty sky, so the sky holds still however the phone jitters.
