@@ -78,6 +78,52 @@ func classify(t map[string]string) (wayKind, bool) {
 	return 0, false
 }
 
+// asciiFold turns a name into plain ASCII for the terminal: accents are
+// dropped (á -> a, ñ -> n, ü -> u, ß -> ss), anything else becomes '?'.
+func asciiFold(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		switch {
+		case r < 128:
+			b.WriteRune(r)
+		case strings.ContainsRune("ÀÁÂÃÄÅàáâãäå", r):
+			b.WriteByte("Aa"[boolIdx(r >= 'à')])
+		case strings.ContainsRune("ÈÉÊËèéêë", r):
+			b.WriteByte("Ee"[boolIdx(r >= 'è')])
+		case strings.ContainsRune("ÌÍÎÏìíîï", r):
+			b.WriteByte("Ii"[boolIdx(r >= 'ì')])
+		case strings.ContainsRune("ÒÓÔÕÖØòóôõöø", r):
+			b.WriteByte("Oo"[boolIdx(r >= 'ò')])
+		case strings.ContainsRune("ÙÚÛÜùúûü", r):
+			b.WriteByte("Uu"[boolIdx(r >= 'ù')])
+		case r == 'Ñ':
+			b.WriteByte('N')
+		case r == 'ñ':
+			b.WriteByte('n')
+		case r == 'Ç':
+			b.WriteByte('C')
+		case r == 'ç':
+			b.WriteByte('c')
+		case r == 'ß':
+			b.WriteString("ss")
+		case r == '\u2019' || r == '\u2018':
+			b.WriteByte('\'')
+		case r == '\u2013' || r == '\u2014':
+			b.WriteByte('-')
+		default:
+			b.WriteByte('?')
+		}
+	}
+	return b.String()
+}
+
+func boolIdx(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
 func cacheDir() string {
 	d, err := os.UserCacheDir()
 	if err != nil {
@@ -130,7 +176,7 @@ func fetchWays(center latLon, radius int) ([]way, error) {
 		}
 		g := e.Geometry
 		closed := len(g) > 3 && g[0] == g[len(g)-1] && k <= kindBuilding
-		ways = append(ways, way{kind: k, closed: closed, name: e.Tags["name"], pts: g})
+		ways = append(ways, way{kind: k, closed: closed, name: asciiFold(e.Tags["name"]), pts: g})
 	}
 	return ways, nil
 }

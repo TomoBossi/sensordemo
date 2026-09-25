@@ -120,7 +120,7 @@ func list() {
 
 func main() {
 	color := false
-	snapshot, mock := "", ""
+	snapshot, mock, frames := "", "", 30
 	var args []string
 	for i := 1; i < len(os.Args); i++ {
 		switch a := os.Args[i]; a {
@@ -132,6 +132,11 @@ func main() {
 		case "--mock": // hidden: fixed readings instead of sensord (see mock.go)
 			if i+1 < len(os.Args) {
 				mock = os.Args[i+1]
+				i++
+			}
+		case "--frames": // hidden: how many frames a snapshot renders (30 = ~1 s)
+			if i+1 < len(os.Args) {
+				fmt.Sscanf(os.Args[i+1], "%d", &frames)
 				i++
 			}
 		case "--color", "-c":
@@ -154,7 +159,7 @@ func main() {
 	if snapshot != "" {
 		var w, h int
 		fmt.Sscanf(snapshot, "%dx%d", &w, &h)
-		if err := snap(args[0], w, h, mock); err != nil {
+		if err := snap(args[0], w, h, mock, frames); err != nil {
 			fmt.Fprintln(os.Stderr, "sensordemo:", err)
 			os.Exit(1)
 		}
@@ -233,7 +238,7 @@ func run(arg string, color bool) error {
 
 // snap renders about a second of frames at w x h without a terminal and prints
 // the last one, for checking demos from scripts.
-func snap(arg string, w, h int, mock string) error {
+func snap(arg string, w, h int, mock string, frames int) error {
 	var ss *Streams
 	var err error
 	if mock != "" {
@@ -256,7 +261,7 @@ func snap(arg string, w, h int, mock string) error {
 	}
 	var f Frame
 	start := time.Now()
-	for i := 0; i < 30; i++ {
+	for i := 0; i < frames; i++ {
 		time.Sleep(time.Second / 30)
 		f.Resize(w, h)
 		hudH := DrawHUD(f.View(0, 0, w, h), e.name, gauges, ss)

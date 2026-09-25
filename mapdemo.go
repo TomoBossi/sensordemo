@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"math"
+	"sort"
 	"sync"
 )
 
@@ -180,6 +181,7 @@ func (m *mapDemo) Draw(v *View, ss *Streams, t, dt float64) {
 		}
 	}
 	labels := newLabelMask(v)
+	labels.reserve(int(cx)-6, int(cy)-2, 13, 5) // keep names off the position marker
 	for _, pass := range []wayKind{kindRail, kindFoot, kindMinor, kindMajor} {
 		for _, w := range ways {
 			if w.kind != pass {
@@ -199,10 +201,21 @@ func (m *mapDemo) Draw(v *View, ss *Streams, t, dt float64) {
 			}
 		}
 	}
+	// Names: major roads first, then longer streets.
+	named := make([]way, 0, len(ways))
 	for _, w := range ways {
 		if w.name != "" && (w.kind == kindMinor || w.kind == kindMajor) {
-			labels.place(v, w, proj)
+			named = append(named, w)
 		}
+	}
+	sort.SliceStable(named, func(i, j int) bool {
+		if named[i].kind != named[j].kind {
+			return named[i].kind > named[j].kind
+		}
+		return len(named[i].pts) > len(named[j].pts)
+	})
+	for _, w := range named {
+		labels.place(v, w, proj)
 	}
 
 	// Accuracy ring, position, heading arrow.
@@ -321,37 +334,69 @@ func newLabelMask(v *View) *labelMask {
 	return &labelMask{used: make([]bool, v.W*v.H), w: v.W, done: map[string]bool{}}
 }
 
+func (l *labelMask) reserve(x0, y0, w, h int) {
+	for y := max(y0, 0); y < y0+h && y*l.w < len(l.used); y++ {
+		for x := max(x0, 0); x < x0+w && x < l.w; x++ {
+			l.used[y*l.w+x] = true
+		}
+	}
+}
+
 func (l *labelMask) place(v *View, w way, proj func(latLon) (float64, float64)) {
 	if l.done[w.name] {
 		return
 	}
-	best, bx, by := 0.0, 0.0, 0.0
-	for i := 0; i+1 < len(w.pts); i++ {
-		x0, y0 := proj(w.pts[i])
-		x1, y1 := proj(w.pts[i+1])
-		if math.Abs(y1-y0)*2 > math.Abs(x1-x0)*0.4 { // only near-horizontal
-			continue
+	// Walk the visible part of the street and put the name, horizontally, at
+	// the middle of it, if the street is long enough on screen to carry it.
+	type pt struct{ x, y float64 }
+	var vis []pt
+	for _, p := range w.pts {
+		x, y := proj(p)
+		if x >= 0 && y >= 0 && x < float64(v.W) && y < float64(v.H) {
+			vis = append(vis, pt{x, y})
 		}
-		if n := math.Abs(x1 - x0); n > best {
-			best, bx, by = n, (x0+x1)/2, (y0+y1)/2
-		}
+	}
+	total := 0.0
+	for i := 1; i < len(vis); i++ {
+		total += math.Hypot(vis[i].x-vis[i-1].x, (vis[i].y-vis[i-1].y)*2)
 	}
 	text := " " + w.name + " "
-	if best < float64(len(text)+2) {
+	if total < float64(len(text))*1.3 {
 		return
 	}
-	x0, y := int(bx)-len(text)/2, int(by)
-	if y < 0 || y >= v.H || x0 < 0 || x0+len(text) > v.W {
+	// Try the middle first, then points toward either end.
+	for _, frac := range []float64{0.5, 0.33, 0.67, 0.25, 0.75, 0.15, 0.85} {
+		target, acc := total*frac, 0.0
+		bx, by := vis[0].x, vis[0].y
+		for i := 1; i < len(vis); i++ {
+			seg := math.Hypot(vis[i].x-vis[i-1].x, (vis[i].y-vis[i-1].y)*2)
+			if acc+seg >= target {
+				f := (target - acc) / seg
+				bx = vis[i-1].x + (vis[i].x-vis[i-1].x)*f
+				by = vis[i-1].y + (vis[i].y-vis[i-1].y)*f
+				break
+			}
+			acc += seg
+		}
+		x0, y := int(bx)-len(text)/2, int(by)
+		x0 = max(0, min(x0, v.W-len(text)))
+		if y < 0 || y >= v.H || len(text) > v.W || !l.free(x0, y, len(text)) {
+			continue
+		}
+		for i := range text {
+			l.used[y*l.w+x0+i] = true
+		}
+		v.Text(x0, y, text, 230)
+		l.done[w.name] = true
 		return
 	}
-	for i := range text {
+}
+
+func (l *labelMask) free(x0, y, n int) bool {
+	for i := 0; i < n; i++ {
 		if l.used[y*l.w+x0+i] {
-			return
+			return false
 		}
 	}
-	for i := range text {
-		l.used[y*l.w+x0+i] = true
-	}
-	v.Text(x0, y, text, 230)
-	l.done[w.name] = true
+	return true
 }
