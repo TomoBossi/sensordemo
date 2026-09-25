@@ -24,7 +24,8 @@ type space struct {
 	stepMode      bool // p: real steps move you
 	glide         bool // g: glide forward at walking speed
 	stepErr       string
-	pendingToggle bool // step mode changed; (un)subscribe on the next frame
+	pendingToggle bool   // step mode changed; (un)subscribe on the next frame
+	sky           []bool // per cell: the ray saw empty sky (stars may go there)
 }
 
 // start is between pillars (the grid puts one at the origin).
@@ -32,8 +33,8 @@ var start = Vec3{pillarGap / 2, pillarGap / 2, eyeHeight}
 
 const (
 	eyeHeight = 1.6
-	stepLen   = 0.75 // meters per step
-	walkSpeed = 1.3  // meters per second when gliding
+	stepLen   = 0.85 // meters per step
+	walkSpeed = 1.6  // meters per second when gliding
 	pillarGap = 6.0  // pillar grid spacing
 )
 
@@ -76,41 +77,8 @@ func (s *space) Key(k byte) {
 	}
 }
 
-// sdf is the distance from p to the scene, and which surface is nearest:
-// 0 floor, 1 pillar, 2 sphere.
-func sdf(p Vec3) (float64, int) {
-	floor := p[2]
-	// Repeat pillars on a grid by folding x and y into one cell.
-	qx := math.Mod(math.Mod(p[0]+pillarGap/2, pillarGap)+pillarGap, pillarGap) - pillarGap/2
-	qy := math.Mod(math.Mod(p[1]+pillarGap/2, pillarGap)+pillarGap, pillarGap) - pillarGap/2
-	pillar := math.Max(math.Hypot(qx, qy)-0.45, p[2]-3)
-	sphere := math.Sqrt(qx*qx+qy*qy+(p[2]-3.9)*(p[2]-3.9)) - 0.75
-	d, id := floor, 0
-	if pillar < d {
-		d, id = pillar, 1
-	}
-	if sphere < d {
-		d, id = sphere, 2
-	}
-	return d, id
-}
-
-func normal(p Vec3) Vec3 {
-	const e = 0.01
-	d := func(q Vec3) float64 { v, _ := sdf(q); return v }
-	return Vec3{
-		d(p.Add(Vec3{e, 0, 0})) - d(p.Sub(Vec3{e, 0, 0})),
-		d(p.Add(Vec3{0, e, 0})) - d(p.Sub(Vec3{0, e, 0})),
-		d(p.Add(Vec3{0, 0, e})) - d(p.Sub(Vec3{0, 0, e})),
-	}.Norm()
-}
-
-var (
-	shade     = []byte(".,:-=+*#%@")
-	floorCols = []uint8{236, 238, 240, 242, 244, 246, 248, 250, 252, 254}
-	pillarCol = []uint8{24, 25, 31, 32, 38, 39, 45, 81, 117, 159}
-	sphereCol = []uint8{88, 124, 160, 196, 202, 208, 214, 220, 226, 229}
-)
+// shade is the brightness ramp for surfaces, dark to bright.
+var shade = []byte(".,:-=+*#%@")
 
 func (s *space) Draw(v *View, ss *Streams, t, dt float64) {
 	if v.W < 8 || v.H < 4 {
@@ -164,15 +132,32 @@ func (s *space) Draw(v *View, ss *Streams, t, dt float64) {
 	}
 	s.pos = s.pos.Add(s.target.Sub(s.pos).Scale(math.Min(1, dt*4)))
 
-	sun := Vec3{0.4, 0.3, 0.85}.Norm()
 	fov := math.Tan(35 * math.Pi / 180)
 	aspect := float64(v.W) / float64(2*v.H)
+	if len(s.sky) != v.W*v.H {
+		s.sky = make([]bool, v.W*v.H)
+	}
 	for y := 0; y < v.H; y++ {
 		for x := 0; x < v.W; x++ {
 			u := (2*(float64(x)+0.5)/float64(v.W) - 1) * fov * aspect
 			w := (1 - 2*(float64(y)+0.5)/float64(v.H)) * fov
 			dir := R.Apply(Vec3{u, w, -1}.Norm())
-			s.cast(v, x, y, dir, sun, t)
+			s.sky[y*v.W+x] = s.cast(v, x, y, dir)
+		}
+	}
+
+	// Stars come from a fixed catalog, projected into the cells that show
+	// empty sky, so the sky holds still however the phone jitters.
+	Rt := R.T()
+	for _, st := range stars {
+		c := Rt.Apply(st.dir)
+		if c[2] > -0.05 {
+			continue // behind the camera
+		}
+		x := int((c[0]/(-c[2])/(fov*aspect) + 1) / 2 * float64(v.W))
+		y := int((1 - c[1]/(-c[2])/fov) / 2 * float64(v.H))
+		if x >= 0 && y >= 0 && x < v.W && y < v.H && s.sky[y*v.W+x] {
+			v.Set(x, y, st.c, st.fg)
 		}
 	}
 	if s.stepErr != "" {
@@ -180,51 +165,54 @@ func (s *space) Draw(v *View, ss *Streams, t, dt float64) {
 	}
 }
 
-func (s *space) cast(v *View, x, y int, dir, sun Vec3, t float64) {
-	const maxDist = 45.0
+// cast renders one cell's ray and reports whether it saw empty sky.
+func (s *space) cast(v *View, x, y int, dir Vec3) bool {
+	const maxDist = 60.0
 	dist := 0.0
-	for i := 0; i < 64; i++ {
+	for i := 0; i < 80; i++ {
 		p := s.pos.Add(dir.Scale(dist))
-		d, id := sdf(p)
+		d, mat := scene(p)
 		if d < 0.01 {
-			n := normal(p)
-			lum := math.Max(0, n.Dot(sun))*0.8 + 0.2
-			fog := 1 - dist/maxDist
-			lum *= fog * fog
-			cols := floorCols
-			switch id {
-			case 0: // checkered floor, 1 m tiles
+			n := sceneNormal(p)
+			diffuse := n.Dot(sunDir)
+			light := 0.0
+			if diffuse > 0 {
+				light = diffuse * softShadow(p.Add(n.Scale(0.02)))
+			}
+			lum := 0.22 + 0.9*light
+			switch mat {
+			case matFloor: // checkered floor, 1 m tiles
 				if (int(math.Floor(p[0]))+int(math.Floor(p[1])))&1 == 0 {
-					lum *= 0.55
+					lum *= 0.6
 				}
-			case 1:
-				cols = pillarCol
-			case 2:
-				cols = sphereCol
-				lum = math.Min(1, lum*1.2)
+			case matCrystal: // a glint where the sun reflects
+				r := dir.Sub(n.Scale(2 * dir.Dot(n)))
+				lum += 0.6 * math.Pow(math.Max(0, r.Dot(sunDir)), 12)
+			case matMonolith:
+				lum *= 0.5
+			}
+			fog := 1 - dist/maxDist
+			lum = math.Min(1, lum*fog*(0.4+0.6*fog))
+			if lum < 0.03 {
+				return false
 			}
 			k := min(int(lum*float64(len(shade))), len(shade)-1)
-			if lum < 0.04 {
-				return
-			}
-			v.Set(x, y, shade[k], cols[k])
-			return
+			v.Set(x, y, shade[k], matColors[mat][k])
+			return false
 		}
 		dist += d
-		if dist > maxDist || p[2] > 12 {
+		if dist > maxDist || p[2] > 15 {
 			break
 		}
 	}
-	// Sky: sparse stars fixed to directions, twinkling.
-	if dir[2] > 0 {
-		h := math.Sin(dir[0]*412.3+dir[1]*929.1+dir[2]*173.7) * 43758.5
-		h -= math.Floor(h)
-		if h > 0.985 {
-			c := byte('.')
-			if math.Sin(t*3+h*100) > 0.6 {
-				c = '*'
-			}
-			v.Set(x, y, c, 229)
-		}
+	if dir[2] <= 0 {
+		return false // below the horizon but past the fog: stays dark
 	}
+	if c, fg, ok := shadeSky(dir); ok {
+		if c != ' ' {
+			v.Set(x, y, c, fg)
+		}
+		return false
+	}
+	return true
 }
