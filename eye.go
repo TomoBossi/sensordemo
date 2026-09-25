@@ -37,6 +37,14 @@ type eye struct {
 	blinkEnd  float64
 	rng       *rand.Rand
 
+	// Recentering: the pose and gravity that count as "straight ahead", so
+	// the gaze and the lamp are relative to how you hold the phone.
+	ref        Mat3
+	hasRef     bool
+	firstCount int
+	g0         Vec3
+	hasG0      bool
+
 	// per frame
 	gaze   Vec3 // where the eyeball looks
 	thU    float64
@@ -65,13 +73,18 @@ func (e *eye) Help() []string {
 		"A 3D eye lit by a lamp above you: tilt or turn the phone and the light and the glint shift across it.",
 		"Cover the top of the phone (near the earpiece) and it closes; tilt it and it looks toward the low side; it blinks on its own.",
 		"Brighter light: brighter eye, smaller pupil; direct sun makes it squint.",
+		"r      recenter: look straight ahead, lamp back in front",
 		"space  blink",
 	}
 }
 
 func (e *eye) Key(k byte) {
-	if k == ' ' {
+	switch k {
+	case ' ':
 		e.nextBlink = 0
+	case 'r':
+		e.hasRef, e.hasG0 = false, false
+		e.firstCount = -1 // take the next reading, no settling wait
 	}
 }
 
@@ -164,11 +177,11 @@ var (
 	caruncleCol = []uint8{52, 88, 89, 125, 131, 167, 168, 174, 175, 218}
 )
 
-// eyeFade is 1 around the eye, falling smoothly to 0 by about half again
-// its size, so the face dissolves into black.
+// eyeFade is 1 at the eye opening and falls off gently with distance from
+// its edge, so the lids and crease show as a soft halo that dissolves into
+// black rather than a lump of lit skin.
 func eyeFade(x, y float64) float64 {
-	r := math.Hypot(x/1.3, y/1.0)
-	f := clamp01((1.55 - r) / 0.65)
+	f := clamp01((0.7 - almond(x, y)) / 0.7)
 	return f * f * (3 - 2*f)
 }
 
@@ -177,9 +190,11 @@ func eyeFade(x, y float64) float64 {
 func eyeCamera(w, h int) (camZ, tanX, tanY float64) {
 	camZ = 6
 	aspect := float64(2*h) / float64(w)
-	tanX = 1.8 / (camZ - 0.6)
-	if tanX*aspect < 1.3/(camZ-0.6) { // wide screens: fit the height
-		tanX = 1.3 / (camZ - 0.6) / aspect
+	// The opening (half-width 0.95) spans ~80% of the width; on wide
+	// screens, fit the height instead.
+	tanX = 1.15 / (camZ - 0.6)
+	if tanX*aspect < 0.72/(camZ-0.6) {
+		tanX = 0.72 / (camZ - 0.6) / aspect
 	}
 	return camZ, tanX, tanX * aspect
 }
@@ -215,7 +230,12 @@ func (e *eye) Draw(v *View, ss *Streams, t, dt float64) {
 	if a := ss.Get("accelerometer"); a != nil {
 		if r := a.Read(); r.OK && len(r.V) >= 2 {
 			g := toScreen(ss, r.V) // gravity in screen coords is (-ax, +ay)
-			tx, ty := math.Max(-1, math.Min(1, -g[0]/6)), math.Max(-1, math.Min(1, (g[1]-6)/5))
+			if !e.hasG0 {
+				e.g0, e.hasG0 = g, true
+			}
+			// Look toward the side that tipped down since recentering.
+			tx := math.Max(-1, math.Min(1, -(g[0]-e.g0[0])/5))
+			ty := math.Max(-1, math.Min(1, (g[1]-e.g0[1])/4))
 			e.lookX += (tx - e.lookX) * math.Min(1, dt*6)
 			e.lookY += (ty - e.lookY) * math.Min(1, dt*6)
 		}
@@ -229,11 +249,23 @@ func (e *eye) Draw(v *View, ss *Streams, t, dt float64) {
 
 	// The lamp hangs above you in the room; in eye coordinates it moves as
 	// the phone turns. A soft fixed light keeps the change gentle.
-	lamp := Vec3{-0.35, 0.55, 0.75}.Norm()
+	// At the reference pose the lamp is in front, a little up and left.
+	lamp0 := Vec3{-0.3, 0.35, 1}.Norm()
+	lamp := lamp0
 	if o := ss.Get("game_rotation_vector"); o != nil {
 		if r := o.Read(); r.OK {
 			if R, ok := FromRotationVector(r.V); ok {
-				lamp = R.Mul(screenFrame(ss)).T().Apply(Vec3{0.25, -0.35, 1}.Norm())
+				R = R.Mul(screenFrame(ss))
+				if e.firstCount == 0 {
+					e.firstCount = r.Count
+				}
+				// wait for sensor fusion to settle, unless recentering
+				if !e.hasRef && (e.firstCount < 0 || r.Count-e.firstCount >= 30) {
+					e.ref, e.hasRef = R, true
+				}
+				if e.hasRef {
+					lamp = R.T().Mul(e.ref).Apply(lamp0)
+				}
 			}
 		}
 	}
@@ -280,7 +312,7 @@ func (e *eye) shade(v *View, x, y int, cam, dir, lamp, fill Vec3, strength float
 			case eyeBall:
 				cosA := n.Dot(e.gaze)
 				ang := math.Acos(math.Max(-1, math.Min(1, cosA)))
-				shininess, wet = 90, 1
+				shininess, wet = 160, 1 // a tight, wet glint
 				switch {
 				case ang < e.pupilA:
 					cols = pupilCol
