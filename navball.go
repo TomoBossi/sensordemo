@@ -10,7 +10,7 @@ func init() {
 		name: "navball",
 		desc: "a 3D compass ball, as in aircraft: heading, pitch and roll of the phone at a glance",
 		uses: []string{"geomagnetic_rotation_vector"},
-		new:  func(specs []string) Demo { return &navball{} },
+		new:  func(specs []string) Demo { return &navball{view: viewGlobe} },
 	})
 }
 
@@ -23,7 +23,7 @@ func init() {
 // vector, which Android fuses from the magnetometer, gyroscope and
 // accelerometer.
 type navball struct {
-	view int // viewWindow, viewGlobe or viewNose
+	view int // viewGlobe; the others are kept for tests and experiments
 	has  bool
 	pose Mat3 // smoothed screen-to-world matrix
 	// per-cell sky directions of the last frame, for grid edge detection
@@ -44,9 +44,9 @@ func (c *navball) Setup(ss *Streams) ([]*Gauge, error) {
 
 func (c *navball) Help() []string {
 	return []string{
-		"The ball is the world around you: sky above, ground below, N E S W on the horizon, elevation lines every 30 degrees.",
-		"Hold the phone up in front of you: the center, marked -=o=-, is the direction you face, as if looking through the phone. Turn around, look up or down, tilt it.",
-		"v  cycle views: window (you look out through the phone), globe (the same ball as an object in the room, seen from outside: it turns the other way), nose (the center follows the phone's long axis, best with the phone flat)",
+		"The ball is a globe of directions sitting in the room, fixed to the world like the donut: sky on top, ground below, N E S W around it, elevation lines every 30 degrees.",
+		"You see it from outside, through the phone: lay the phone flat and you look down on its top, like a compass rose; hold it up and you see its side. Turn the phone and the ball stays put.",
+		"The readout is the phone's own heading (its long axis, or its back when upright), pitch and roll.",
 		"If it drifts, wave the phone in a figure 8 to recalibrate the magnetometer; magnets and metal nearby bend it too.",
 	}
 }
@@ -59,11 +59,7 @@ const (
 
 var viewNames = []string{"window", "globe", "nose"}
 
-func (c *navball) Key(k byte) {
-	if k == 'v' {
-		c.view = (c.view + 1) % len(viewNames)
-	}
-}
+func (c *navball) Key(k byte) {}
 
 // camera returns the ball's viewing basis in world coordinates. By default
 // it is the person's view: forward is out of the back of the phone and up is
@@ -178,12 +174,18 @@ func (c *navball) Draw(v *View, ss *Streams, t, dt float64) {
 		y := int(cy - d.Dot(up)*rr + 0.5)
 		v.Text(x-len(text)/2, y, text, col)
 	}
+	// Cardinal letters sit well above the horizon, so they stay readable
+	// whether the ball is seen from the side or from the top.
+	labelEl := 6.0
+	if c.view == viewGlobe {
+		labelEl = 35
+	}
 	for i, p := range points {
 		col := uint8(231)
 		if p == "N" {
 			col = 196
 		}
-		place(float64(i)*45, 6, p, col)
+		place(float64(i)*45, labelEl, p, col)
 	}
 	center := fwd.Scale(depth)
 	nose := math.Mod(math.Atan2(center[0], center[1])*180/math.Pi+decl+360, 360)
@@ -198,8 +200,11 @@ func (c *navball) Draw(v *View, ss *Streams, t, dt float64) {
 	// Heading and pitch are the phone's (long axis, or the back when held
 	// upright), the same as the compass, whatever the view shows.
 	heading := math.Mod(math.Round(Heading(c.pose)*180/math.Pi+decl)+720, 360)
-	pitch := math.Asin(math.Max(-1, math.Min(1, fwd[2]))) * 180 / math.Pi
-	roll := math.Atan2(-right[2], up[2]) * 180 / math.Pi
+	// Pitch and roll of the phone itself: how far its long axis tips up,
+	// and how far it is rolled around it (right side down is positive).
+	pr, pu, pf := camera(c.pose, viewNose)
+	pitch := math.Asin(math.Max(-1, math.Min(1, pf[2]))) * 180 / math.Pi
+	roll := math.Atan2(-pr[2], pu[2]) * 180 / math.Pi
 	// Round, and drop the sign of negative zero so it doesn't print "-00".
 	pitch, roll = math.Round(pitch)+0, math.Round(roll)+0
 	if pitch == 0 {
@@ -209,9 +214,9 @@ func (c *navball) Draw(v *View, ss *Streams, t, dt float64) {
 		roll = 0
 	}
 	name := points[int(math.Mod(heading+22.5, 360)/45)%len(points)]
-	line := fmt.Sprintf("heading %03.0f %-2s  pitch %+03.0f  roll %+04.0f  [%s]", heading, name, pitch, roll, viewNames[c.view])
+	line := fmt.Sprintf("heading %03.0f %-2s   pitch %+03.0f   roll %+04.0f", heading, name, pitch, roll)
 	if len(line) > v.W {
-		line = fmt.Sprintf("%03.0f %s  %+.0f  %+.0f  [%s]", heading, name, pitch, roll, viewNames[c.view])
+		line = fmt.Sprintf("%03.0f %s  %+.0f  %+.0f", heading, name, pitch, roll)
 	}
 	ly := min(int(cy+rr+1.5), v.H-2)
 	v.Text((v.W-len(line))/2, ly, line, 250)

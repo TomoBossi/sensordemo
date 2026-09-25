@@ -26,7 +26,7 @@ rotating the phone just re-lays it out.
 | `donut` | game rotation vector (+ gyroscope) | the donut.c torus stays still in the room; turn the phone to see it from other sides. `r` recenter, `a` auto-spin, `+`/`-` zoom |
 | `fluid` | accelerometer | tilt to pour, shake for waves, lay flat for zero-g. `s` splash, `r` refill, `+`/`-` amount |
 | `space` | game rotation vector (+ step detector) | the screen is a window into a ray-marched world (pillars, trees, blocks, portals, crystals, a rare monolith; a sun that lights and shadows them, a ringed planet, a moon, fixed stars); turn to look around. `w`/`s` step, `g` glide forward, `p` step mode (real steps move you; its bar beats with each step) |
-| `navball` | rotation vector + magnetometer | a 3D compass ball: the world (sky, ground, horizon, N E S W, elevation lines) around you; hold the phone up and the center is the direction you face. `v` cycles views: window, globe (the ball as an object, turning the other way), nose (center = long axis) |
+| `navball` | rotation vector + magnetometer | a 3D globe of directions fixed in the room (sky on top, ground below, N E S W, elevation lines), seen from outside through the phone: flat, you look down on it like a compass rose; upright, you see its side. Heading, pitch and roll of the phone below |
 | `compass` | rotation vector + magnetometer | a flat compass rose that turns so N points north, following the phone's long axis however it is rolled; the heading in big digits |
 | `map` | location + rotation vector | OpenStreetMap around you in ASCII, turning with the phone. `+`/`-` zoom, `n` north-up |
 | `gestures` | Moto gestures, step detector | chop, twist, flip, lift or walk: each burst of big letters is one sensor event |

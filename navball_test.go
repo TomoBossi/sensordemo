@@ -18,12 +18,14 @@ func TestNavballSweep(t *testing.T) {
 				ss := &Streams{byKey: map[string]*Stream{"rotation_vector": {}, "magnetic_field": {}}}
 				q := quatFromEuler([]float64{yaw, pitch, roll})
 				ss.byKey["rotation_vector"].push(client.Event{T: 1, V: q})
-				c := &navball{}
+				c := &navball{view: viewGlobe}
 				f.Resize(60, 34)
 				v := f.View(0, 0, 60, 34)
 				c.Draw(v, ss, 0, 1)
 				R, _ := FromRotationVector(q)
-				nose := R.Apply(Vec3{0, 0, -1}) // default view: out of the back
+				// Globe view: the face toward you shows the directions toward
+				// you, out of the screen.
+				nose := R.Apply(Vec3{0, 0, 1})
 				rr := math.Min(float64(v.H-4)/2, float64(v.W)/4-1)
 				i := int(rr+1)*v.W + v.W/2 // the cell at the ball's center
 				wantEl := math.Asin(nose[2]) * 180 / math.Pi
