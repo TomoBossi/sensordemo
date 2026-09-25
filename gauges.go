@@ -9,7 +9,10 @@ type axisInfo struct {
 	scale  func() Scale
 }
 
-func sym(max float64) func() Scale    { return func() Scale { return &Symmetric{Max: max} } }
+func sym(max float64) func() Scale { return func() Scale { return &Symmetric{Max: max} } }
+func fixed(max float64) func() Scale {
+	return func() Scale { return &Symmetric{Max: max, Fixed: true} }
+}
 func lin(lo, hi float64) func() Scale { return func() Scale { return &Linear{Min: lo, Max: hi} } }
 
 var xyz = []string{"x", "y", "z"}
@@ -17,10 +20,10 @@ var xyz = []string{"x", "y", "z"}
 // axes knows the common Android sensor types; anything else gets generic
 // labels and an auto-ranging symmetric scale.
 var axes = map[string]axisInfo{
-	"accelerometer":               {xyz, "m/s2", sym(12)},
-	"accelerometer_uncalibrated":  {[]string{"x", "y", "z", "bias x", "bias y", "bias z"}, "m/s2", sym(12)},
+	"accelerometer":               {xyz, "m/s2", fixed(15)},
+	"accelerometer_uncalibrated":  {[]string{"x", "y", "z", "bias x", "bias y", "bias z"}, "m/s2", fixed(15)},
 	"linear_acceleration":         {xyz, "m/s2", sym(3)},
-	"gravity":                     {xyz, "m/s2", sym(10)},
+	"gravity":                     {xyz, "m/s2", fixed(10)},
 	"gyroscope":                   {xyz, "rad/s", sym(3)},
 	"gyroscope_uncalibrated":      {[]string{"x", "y", "z", "drift x", "drift y", "drift z"}, "rad/s", sym(3)},
 	"magnetic_field":              {xyz, "uT", sym(60)},
