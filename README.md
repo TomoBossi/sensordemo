@@ -31,7 +31,7 @@ rotating the phone just re-lays it out.
 | `map` | location + rotation vector | OpenStreetMap around you in ASCII, turning with the phone. `+`/`-` zoom, `n` north-up |
 | `gestures` | Moto gestures, step detector | chop, twist, flip, lift or walk: each burst of big letters is one sensor event |
 | `eye` | proximity + light + orientation | a ray-marched 3D eye lit by a lamp above you: turn the phone and the light and glint move; cover the top of the phone and it closes; tilt and it looks that way; light sets the pupil size, and direct sun makes it squint |
-| `sky` | light | cover the sensor for night (moon, stars, lit windows), light it for day |
+| `sky` | light | one disc driven by light on a log scale: a new moon among stars in the dark, waxing to full with room light, glowing brighter, then turning cell by cell into a churning sun with corona and flares in sunlight. The moon is the real near side, upside down as seen from the southern hemisphere |
 | `scope` | any | an oscilloscope: every value of any sensors as scrolling traces. `space` pause |
 
 ## Compass accuracy

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"math"
 	"math/rand"
 )
@@ -8,20 +9,35 @@ import (
 func init() {
 	register(entry{
 		name: "sky",
-		desc: "the light sensor as the sky: sun and clouds in bright light, moon and stars in the dark",
+		desc: "the light sensor as one disc: a moon that waxes with light, glows, and turns into a blazing sun",
 		uses: []string{"light"},
 		new:  func(specs []string) Demo { return &sky{} },
 	})
 }
 
-// sky maps light on the asymptotic scale (lux/(lux+300)) to a scene: the sun
-// climbs as it gets brighter, dusk sets in around dim room light, and in the
-// dark the moon, stars and lit windows come out.
+// sky maps the light level, on a log scale, onto a single disc. In the dark
+// it is a new moon lit only by earthshine among stars; more light waxes it
+// through crescent and half to full; brighter still it glows and the faint
+// stars go out; toward sunlight it turns, cell by cell, into the sun, with a
+// churning surface, a corona and flares.
+//
+// The moon is drawn from the real near side (maria, craters, Tycho's rays),
+// upside down as seen from the southern hemisphere.
 type sky struct {
-	day   float64 // smoothed 0 (dark) .. 1 (bright)
-	stars []struct{ x, y, phase float64 }
-	towns []int // building heights, per column
-	w, h  int
+	logLux float64 // smoothed log10(lux+1)
+	has    bool
+
+	// cached per size
+	w, h   int
+	albedo []float64 // moon surface brightness per disc cell
+	stars  []skyStar
+}
+
+type skyStar struct {
+	x, y int
+	mag  float64 // 0 bright .. 1 faint
+	c    byte
+	fg   uint8
 }
 
 func (s *sky) Setup(ss *Streams) ([]*Gauge, error) {
@@ -34,138 +50,303 @@ func (s *sky) Setup(ss *Streams) ([]*Gauge, error) {
 
 func (s *sky) Help() []string {
 	return []string{
-		"Cover the light sensor (top of the phone) for night,",
-		"point it at a lamp or window for day.",
-		"The data strip bar is asymptotic: 300 lux sits",
-		"in the middle, sunlight crowds toward the end.",
+		"One disc driven by the light sensor (top of the phone): cover it for a new moon among the stars; room light waxes it to full; bright light makes it glow; sunlight turns it into the sun.",
+		"The moon is the real near side (seas, craters, Tycho's rays), upside down as seen from the southern hemisphere.",
 	}
 }
 
 func (s *sky) Key(k byte) {}
 
+// Moon features in disc coordinates (x right, y up), as seen from the
+// northern hemisphere; flipped for the southern one when drawn.
+var maria = []struct{ x, y, rx, ry float64 }{
+	{-0.28, 0.42, 0.3, 0.24},   // Imbrium
+	{0.27, 0.37, 0.16, 0.15},   // Serenitatis
+	{0.38, 0.08, 0.2, 0.17},    // Tranquillitatis
+	{0.72, 0.28, 0.1, 0.09},    // Crisium
+	{-0.62, 0.05, 0.22, 0.42},  // Procellarum
+	{-0.18, -0.33, 0.17, 0.13}, // Nubium
+	{-0.52, -0.4, 0.11, 0.1},   // Humorum
+	{0.6, -0.1, 0.12, 0.17},    // Fecunditatis
+	{0.44, -0.33, 0.1, 0.1},    // Nectaris
+	{0.0, 0.72, 0.4, 0.07},     // Frigoris
+	{0.02, 0.02, 0.12, 0.1},    // Vaporum and Sinus Medii
+}
+
+var tycho = [2]float64{-0.13, -0.72}
+
+type crater struct{ x, y, r float64 }
+
+func makeCraters() []crater {
+	rng := rand.New(rand.NewSource(11))
+	cs := []crater{{-0.31, 0.16, 0.06}, {tycho[0], tycho[1], 0.055}, {-0.46, 0.33, 0.04}, {0.05, -0.55, 0.07}}
+	for len(cs) < 60 {
+		x, y := rng.Float64()*2-1, rng.Float64()*2-1
+		if x*x+y*y > 0.92 {
+			continue
+		}
+		cs = append(cs, crater{x, y, 0.015 + 0.05*math.Pow(rng.Float64(), 2)})
+	}
+	return cs
+}
+
+var craters = makeCraters()
+
+// moonAlbedo is the brightness of the moon's surface at disc point (x, y):
+// bright highlands, dark maria with irregular edges, craters with bright
+// rims and darker floors, and Tycho's rays.
+func moonAlbedo(x, y float64) float64 {
+	a := 0.78 + 0.12*fbm(x*6, y*6, 0.5, 4) // highland texture
+	edge := 0.25 * fbm(x*5+7, y*5, 1.5, 3) // ragged sea shores
+	for _, m := range maria {
+		d := math.Hypot((x-m.x)/m.rx, (y-m.y)/m.ry) + edge
+		a -= 0.36 * clamp01((1.15-d)/0.3)
+	}
+	for _, c := range craters {
+		d := math.Hypot(x-c.x, y-c.y) / c.r
+		switch {
+		case d < 0.8:
+			a -= 0.08
+		case d < 1.15:
+			a += 0.1
+		}
+	}
+	// Tycho's rays: bright streaks radiating across the southern half.
+	dx, dy := x-tycho[0], y-tycho[1]
+	if r := math.Hypot(dx, dy); r > 0.06 && r < 1.3 {
+		ang := math.Atan2(dy, dx)
+		ray := math.Pow(math.Max(0, math.Sin(ang*7+1.3)*math.Sin(ang*11)), 6)
+		a += 0.22 * ray * (1 - r/1.3)
+	}
+	return clamp01(a)
+}
+
+// Value noise and fractal noise, for textures.
+func noiseHash(x, y, z int) float64 {
+	h := uint32(x)*0x8da6b343 ^ uint32(y)*0xd8163841 ^ uint32(z)*0xcb1ab31f
+	h ^= h >> 13
+	h *= 0x5bd1e995
+	h ^= h >> 15
+	return float64(h&0xffffff) / 0xffffff
+}
+
+func noise3(x, y, z float64) float64 {
+	xi, yi, zi := math.Floor(x), math.Floor(y), math.Floor(z)
+	fx, fy, fz := x-xi, y-yi, z-zi
+	fx, fy, fz = fx*fx*(3-2*fx), fy*fy*(3-2*fy), fz*fz*(3-2*fz)
+	X, Y, Z := int(xi), int(yi), int(zi)
+	lerp := func(a, b, t float64) float64 { return a + (b-a)*t }
+	c := func(dx, dy, dz int) float64 { return noiseHash(X+dx, Y+dy, Z+dz) }
+	return lerp(
+		lerp(lerp(c(0, 0, 0), c(1, 0, 0), fx), lerp(c(0, 1, 0), c(1, 1, 0), fx), fy),
+		lerp(lerp(c(0, 0, 1), c(1, 0, 1), fx), lerp(c(0, 1, 1), c(1, 1, 1), fx), fy), fz)
+}
+
+// fbm is fractal noise in [-0.5, 0.5].
+func fbm(x, y, z float64, octaves int) float64 {
+	sum, amp, norm := 0.0, 0.5, 0.0
+	for i := 0; i < octaves; i++ {
+		sum += amp * noise3(x, y, z)
+		norm += amp
+		x, y, z = x*2.03, y*2.03, z*2.03
+		amp /= 2
+	}
+	return sum/norm - 0.5
+}
+
+var (
+	skyRamp   = []byte(".,:-=+*#%@")
+	moonCols  = []uint8{235, 237, 239, 241, 243, 245, 247, 250, 252, 255}
+	glowCols  = []uint8{238, 241, 244, 247, 250, 253, 230, 230, 231, 231}
+	sunCols   = []uint8{52, 88, 124, 160, 202, 208, 214, 220, 226, 229}
+	coronaCol = []uint8{52, 88, 124, 160, 166, 202, 208, 214}
+)
+
 func (s *sky) layout(w, h int) {
 	s.w, s.h = w, h
-	rng := rand.New(rand.NewSource(3))
+	rng := rand.New(rand.NewSource(5))
 	s.stars = s.stars[:0]
-	for i := 0; i < w*h/25; i++ {
-		s.stars = append(s.stars, struct{ x, y, phase float64 }{
-			rng.Float64() * float64(w), rng.Float64() * float64(h) * 0.7, rng.Float64() * 6,
-		})
-	}
-	s.towns = make([]int, w)
-	for x := 0; x < w; {
-		bw, bh := 3+rng.Intn(6), 2+rng.Intn(max(2, h/4))
-		for i := 0; i < bw && x < w; i++ {
-			s.towns[x] = bh
-			x++
+	for i := 0; i < w*h/18; i++ {
+		m := rng.Float64()
+		st := skyStar{x: rng.Intn(w), y: rng.Intn(h), mag: m, c: '.', fg: 244}
+		switch {
+		case m < 0.04:
+			st.c, st.fg = '*', 231
+		case m < 0.14:
+			st.c, st.fg = '+', 252
+		case m < 0.35:
+			st.fg = 249
 		}
-		if x < w && rng.Intn(3) == 0 {
-			s.towns[x] = 0
-			x++
+		if rng.Intn(10) == 0 {
+			st.fg = []uint8{153, 217, 229, 159}[rng.Intn(4)]
 		}
+		s.stars = append(s.stars, st)
 	}
+	s.albedo = nil // recomputed for the new disc size
 }
 
 func (s *sky) Draw(v *View, ss *Streams, t, dt float64) {
-	if v.W < 10 || v.H < 8 {
+	if v.W < 10 || v.H < 6 {
 		return
 	}
 	if s.w != v.W || s.h != v.H {
 		s.layout(v.W, v.H)
 	}
-	target := 0.0
+	lux := 0.0
 	if r := ss.Get("light").Read(); r.OK && len(r.V) > 0 {
-		target = r.V[0] / (r.V[0] + 300)
+		lux = r.V[0]
 	}
-	s.day += (target - s.day) * math.Min(1, dt*3)
-	night := math.Max(0, 1-s.day*2.2) // 1 in the dark, 0 from ~450 lux up
-	ground := v.H - 1
+	target := math.Log10(math.Max(0, lux) + 1)
+	if !s.has {
+		s.logLux, s.has = target, true
+	}
+	s.logLux += (target - s.logLux) * math.Min(1, dt*2.5)
+	l := s.logLux
 
-	// Stars fade in with the night and twinkle.
+	phase := clamp01(l / 2.3)          // new (0 lux) .. full (~200 lux)
+	glow := clamp01((l - 2.3) / 1.2)   // ~200 .. ~3000 lux
+	sunT := clamp01((l - 3.3) / 1.0)   // ~2000 .. ~20000 lux: moon becomes sun
+	starVis := (1 - glow) * (1 - sunT) // stars fade as the sky brightens
+
+	cx, cy := float64(v.W)/2, float64(v.H)/2-0.5
+	R := math.Min(float64(v.W)/2, float64(v.H)) * 0.47 // radius in columns
+	if sunT > 0 {
+		R *= 1 - 0.25*sunT // leave room for the corona
+	}
+
+	// Stars first; the disc and its glow cover them. Faint stars go first.
 	for _, st := range s.stars {
-		if night < 0.2 {
-			break
-		}
-		tw := math.Sin(t*2 + st.phase)
-		c := byte('.')
-		if tw > 0.7 {
-			c = '*'
-		} else if tw > 0.3 {
-			c = '+'
-		}
-		if math.Mod(st.phase*10, 1) < night {
-			v.Set(int(st.x), int(st.y), c, 229)
+		if st.mag < starVis*0.9+0.1*starVis {
+			d := math.Hypot((float64(st.x)-cx)/R, (float64(st.y)-cy)*2/R)
+			if d > 1.05 {
+				v.Set(st.x, st.y, st.c, st.fg)
+			}
 		}
 	}
 
-	// Sun or moon, rising with the brightness.
-	cx := float64(v.W) * 0.7
-	top, bottom := float64(v.H)*0.18, float64(v.H)*0.75
-	if s.day > 0.25 {
-		cy := bottom - (bottom-top)*math.Min(1, (s.day-0.25)/0.6)
-		rr := math.Max(2, float64(v.H)/8)
-		for y := 0; y < v.H; y++ {
+	// The moon is lit by a sun that swings from behind it (new) to the
+	// side (half) to in front (full), from the right: a waxing moon as seen
+	// from the south is lit on its left, so light comes from -x here.
+	th := phase * math.Pi
+	light := Vec3{-math.Sin(th), 0, -math.Cos(th)}
+	earthshine := 0.05 * (1 - phase)
+
+	if len(s.albedo) != v.W*v.H {
+		s.albedo = make([]float64, v.W*v.H)
+		parallelRows(v.H, func(y int) {
 			for x := 0; x < v.W; x++ {
-				d := math.Hypot((float64(x)-cx)/2, float64(y)-cy)
-				switch {
-				case d < rr:
-					v.Set(x, y, '@', 226)
-				case d < rr*1.9:
-					// rays: spokes that turn slowly
-					a := math.Atan2(float64(y)-cy, (float64(x)-cx)/2) + t*0.2
-					if math.Mod(a*8/math.Pi+16, 2) < 0.35 {
-						v.Set(x, y, '*', 220)
-					}
+				px := (float64(x) + 0.5 - cx) / R
+				py := -(float64(y) + 0.5 - cy) * 2 / R
+				if px*px+py*py < 1 {
+					s.albedo[y*v.W+x] = moonAlbedo(-px, -py) // southern view: upside down
 				}
 			}
-		}
-	} else {
-		cy := top + 2
-		rr := math.Max(2, float64(v.H)/10)
-		for y := 0; y < v.H; y++ {
-			for x := 0; x < v.W; x++ {
-				d := math.Hypot((float64(x)-cx)/2, float64(y)-cy)
-				d2 := math.Hypot((float64(x)-cx-rr*0.9)/2, float64(y)-cy+rr*0.3)
-				if d < rr && d2 > rr*0.85 { // crescent
-					v.Set(x, y, '(', 230)
-				}
-			}
-		}
+		})
 	}
 
-	// Clouds drift by in daylight.
-	if s.day > 0.35 {
-		for i := 0; i < 4; i++ {
-			w := 10 + i*3
-			x0 := int(math.Mod(t*(1.5+float64(i)*0.7)+float64(i*v.W/3), float64(v.W+w))) - w
-			y0 := int(float64(v.H) * (0.12 + 0.12*float64(i)))
-			shape := []string{"   .--.   ", " .(    ). ", "(___.___)_"}
-			for r, line := range shape {
-				for k := 0; k < len(line) && k < w; k++ {
-					if line[k] != ' ' {
-						v.Set(x0+k, y0+r, line[k], 255)
-					}
-				}
+	parallelRows(v.H, func(y int) {
+		for x := 0; x < v.W; x++ {
+			px := (float64(x) + 0.5 - cx) / R
+			py := -(float64(y) + 0.5 - cy) * 2 / R
+			r := math.Hypot(px, py)
+			if r < 1 {
+				s.drawDisc(v, x, y, px, py, r, light, earthshine, glow, sunT, t)
+			} else {
+				s.drawHalo(v, x, y, px, py, r, glow, sunT, t)
 			}
 		}
-	}
+	})
 
-	// Skyline: dark shapes by day, lit windows at night.
-	for x := 0; x < v.W; x++ {
-		for k := 0; k < s.towns[x] && ground-k >= 0; k++ {
-			y := ground - k
-			c, col := byte('#'), uint8(240)
-			if k > 0 && k < s.towns[x]-1 && x%2 == 1 {
-				if night > 0.3 && (x*7+k*13)%5 != 0 {
-					c, col = ':', 227 // lit window
-				} else {
-					c = '.'
-				}
+	caption := s.caption(lux, phase, glow, sunT)
+	v.Text(max(0, (v.W-len(caption))/2), v.H-1, caption, 244)
+}
+
+func (s *sky) drawDisc(v *View, x, y int, px, py, r float64, light Vec3, earthshine, glow, sunT, t float64) {
+	z := math.Sqrt(1 - r*r)
+	n := Vec3{px, py, z}
+
+	// Moon: sunlight on the albedo map, earthshine on the dark side, and
+	// brighter as it glows.
+	alb := s.albedo[y*v.W+x]
+	moon := alb * (math.Max(0, n.Dot(light))*(0.85+0.4*glow) + earthshine)
+
+	// Sun: limb darkening and a churning granulated surface.
+	gran := 0.8 + 0.4*fbm(px*7, py*7, t*0.35, 4)
+	flow := 0.5 + fbm(px*2.5+t*0.05, py*2.5, t*0.12, 3)
+	sun := (0.45 + 0.55*math.Pow(z, 0.5)) * gran * (0.85 + 0.3*flow)
+
+	// The morph: each cell turns sun at its own moment (fixed noise), so
+	// the surface transforms patch by patch rather than all at once.
+	isSun := sunT > 0 && sunT >= 0.02+0.96*cellNoise(x, y)
+	lum := moon
+	cols := moonCols
+	switch {
+	case isSun:
+		lum, cols = sun*(0.7+0.3*sunT), sunCols
+	case glow > 0.3 || sunT > 0:
+		cols = glowCols
+		lum = math.Min(1, moon*(1+0.5*sunT))
+	}
+	if lum < 0.03 {
+		return
+	}
+	k := min(int(lum*float64(len(skyRamp))), len(skyRamp)-1)
+	v.Set(x, y, skyRamp[k], cols[k])
+}
+
+// drawHalo draws around the disc: the moon's glow as it brightens, and the
+// sun's corona (flickering rays) and prominences (loops off the limb).
+func (s *sky) drawHalo(v *View, x, y int, px, py, r, glow, sunT, t float64) {
+	ang := math.Atan2(py, px)
+	lum, cols := 0.0, glowCols
+	if glow > 0 && sunT < 1 {
+		lum = glow * (1 - sunT) * 0.45 * math.Exp(-(r-1)*5)
+	}
+	if sunT > 0 {
+		// Corona: rays of varying length that flicker slowly.
+		rays := 0.75 + 1.6*fbm(math.Cos(ang)*3+10, math.Sin(ang)*3, t*0.4, 3)
+		rays += 0.8 * math.Pow(math.Max(0, math.Sin(ang*9+t*0.3)), 6)
+		c := sunT * rays * math.Exp(-(r-1)*2.1)
+		// Prominences: a few loops standing on the limb, gently pulsing.
+		for i, base := range []float64{0.6, 2.3, 3.9, 5.2} {
+			h := 0.22 + 0.06*math.Sin(t*0.7+float64(i))
+			a := math.Remainder(ang-base, 2*math.Pi)
+			// a loop is an arch: a half ring standing on the limb
+			lx, ly := a/0.22, (r-1)/h
+			if ly > -0.05 && math.Abs(math.Hypot(lx, ly)-1) < 0.32 {
+				c = math.Max(c, sunT*(0.9+0.1*math.Sin(t*2+float64(i))))
 			}
-			v.Set(x, y, c, col)
 		}
-		if s.towns[x] == 0 {
-			v.Set(x, ground, '_', 240)
+		if c > lum {
+			lum, cols = c, coronaCol
 		}
 	}
+	if lum < 0.06 || lum < cellNoise(x, y)*0.2 {
+		return
+	}
+	k := min(int(lum*float64(len(skyRamp))), len(skyRamp)-1)
+	v.Set(x, y, skyRamp[k], cols[min(k, len(cols)-1)])
+}
+
+func (s *sky) caption(lux, phase, glow, sunT float64) string {
+	name := ""
+	switch {
+	case sunT > 0.85:
+		name = "the sun"
+	case sunT > 0.05:
+		name = "the moon turning into the sun"
+	case glow > 0.3:
+		name = "a glowing full moon"
+	case phase > 0.93:
+		name = "full moon"
+	case phase > 0.6:
+		name = "waxing gibbous"
+	case phase > 0.4:
+		name = "first quarter (half moon)"
+	case phase > 0.07:
+		name = "waxing crescent"
+	default:
+		name = "new moon"
+	}
+	return fmt.Sprintf("%s  -  %.0f lux", name, lux)
 }
