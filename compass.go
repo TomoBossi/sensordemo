@@ -36,10 +36,9 @@ func (c *compass) Setup(ss *Streams) ([]*Gauge, error) {
 
 func (c *compass) Help() []string {
 	return []string{
-		"Hold the phone flat or upright: the rose turns so",
-		"N points north; the needle is where the phone points.",
-		"If it drifts, wave the phone in a figure 8",
-		"to recalibrate the magnetometer.",
+		"The rose turns so N points north; the heading is where the phone's long axis points, however you roll or tilt it.",
+		"Held upright, the long axis points at the sky, so the heading follows the back of the phone instead, like a camera.",
+		"If it drifts, wave the phone in a figure 8 to recalibrate the magnetometer; magnets and metal nearby bend it too.",
 	}
 }
 

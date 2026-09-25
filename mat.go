@@ -62,18 +62,40 @@ func RotZ(a float64) Mat3 {
 }
 
 // Heading is where the phone points, in radians clockwise from north, given
-// its device-to-world matrix. Flat on a table that is its top edge (device
-// +y); held upright it is the back of the phone (device -z), which is where
-// the top edge's horizontal direction becomes meaningless. The two are blended
-// by how horizontal each one is, so the switch is smooth.
+// its device-to-world matrix: the direction of its long axis (device +y)
+// projected onto the horizontal, so rolling the phone around that axis or
+// tilting it moderately doesn't change it. That becomes undefined as the long
+// axis nears vertical (phone held upright), so there the heading hands over
+// smoothly to where the back of the phone faces, like a camera.
 func Heading(R Mat3) float64 {
 	top := R.Apply(Vec3{0, 1, 0})
 	back := R.Apply(Vec3{0, 0, -1})
-	wt := math.Hypot(top[0], top[1])
-	wb := math.Hypot(back[0], back[1])
-	e := top[0]*wt + back[0]*wb
-	n := top[1]*wt + back[1]*wb
-	return math.Atan2(e, n)
+	th := math.Hypot(top[0], top[1]) // cos of the long axis's elevation
+	// weight of the back: 0 below ~60 degrees of elevation, 1 above ~78
+	wb := smoothstep(0.5, 0.2, th)
+	if wb == 0 || math.Hypot(back[0], back[1]) < 1e-6 {
+		return math.Atan2(top[0], top[1])
+	}
+	if wb == 1 || th < 1e-6 {
+		return math.Atan2(back[0], back[1])
+	}
+	a, b := math.Atan2(top[0], top[1]), math.Atan2(back[0], back[1])
+	if math.Abs(math.Remainder(b-a, 2*math.Pi)) > math.Pi/2 {
+		// The two point opposite ways (top tipped toward you): blending
+		// would cancel out, so take whichever dominates.
+		if wb < 0.5 {
+			return a
+		}
+		return b
+	}
+	return a + math.Remainder(b-a, 2*math.Pi)*wb
+}
+
+// smoothstep goes from 0 at edge0 to 1 at edge1, smoothly (edges may be in
+// either order).
+func smoothstep(edge0, edge1, x float64) float64 {
+	t := math.Max(0, math.Min(1, (x-edge0)/(edge1-edge0)))
+	return t * t * (3 - 2*t)
 }
 
 // FromRotationVector turns an Android rotation-vector reading (x, y, z[, w])
