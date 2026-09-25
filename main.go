@@ -28,6 +28,10 @@ type entry struct {
 
 var registry []entry
 
+// demoArg is an optional second argument for the demo (such as the
+// hourglass's duration).
+var demoArg string
+
 func register(e entry) { registry = append(registry, e) }
 
 func find(name string) *entry {
@@ -92,7 +96,7 @@ func usage() {
 	width := termWidth()
 	fmt.Println("usage:")
 	fmt.Print(columns([][2]string{
-		{"  sensordemo [--gray] DEMO", "a demo by name"},
+		{"  sensordemo [--gray] DEMO [ARG]", "a demo by name (some take an argument)"},
 		{"  sensordemo [--gray] SENSOR[,SENSOR...]", "the demo that uses these sensors"},
 		{"  sensordemo list", "the demos and the sensors they use"},
 	}, width))
@@ -162,6 +166,10 @@ func main() {
 	if len(args) == 1 && args[0] == "list" {
 		list()
 		return
+	}
+	if len(args) == 2 {
+		demoArg = args[1] // e.g. sensordemo hourglass 5m
+		args = args[:1]
 	}
 	if len(args) != 1 {
 		usage()

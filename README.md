@@ -12,6 +12,7 @@ sensordemo gyroscope          # a sensor: picks the demo that uses it
 sensordemo light,proximity    # several sensors: a demo that uses all of them,
                               # or the scope, which shows anything
 sensordemo --gray fluid       # start in grayscale (c cycles palettes)
+sensordemo hourglass 5m       # some demos take an argument
 ```
 
 Keys in every demo: `q` quit, `c` cycle colors (each demo's own palette first,
@@ -32,6 +33,7 @@ rotating the phone just re-lays it out.
 | `gestures` | Moto gestures, step detector | chop, twist, flip, lift or walk: each burst of big letters is one sensor event |
 | `eye` | proximity + light + orientation | a ray-marched 3D eye lit by a lamp above you: turn the phone and the light and glint move; cover the top of the phone and it closes; tilt and it looks that way; light sets the pupil size, and direct sun makes it squint |
 | `sky` | light | one disc driven by light on a log scale: a new moon among stars in the dark, waxing to full with room light, glowing brighter, then turning cell by cell into a churning sun with corona and flares in sunlight. The moon is the real near side, upside down as seen from the southern hemisphere |
+| `hourglass` | gravity | a sand timer: flip the phone to turn it over; grains really fall and pile toward wherever is down; the neck is metered to the duration (`sensordemo hourglass 5m`, default 1m). `r` refill |
 | `scope` | any | an oscilloscope: every value of any sensors as scrolling traces. `space` pause |
 
 ## Compass accuracy
