@@ -60,7 +60,9 @@ func (c *compass) Draw(v *View, ss *Streams, t, dt float64) {
 			c.heading, c.has = h, true
 		}
 		d := math.Remainder(h-c.heading, 2*math.Pi) // shortest way round
-		c.heading += d * math.Min(1, dt*8)
+		// Keep the smoothed angle in (-pi, pi]: it would otherwise
+		// accumulate full turns and go negative.
+		c.heading = math.Remainder(c.heading+d*math.Min(1, dt*8), 2*math.Pi)
 	}
 	cx, cy := float64(v.W)/2, float64(v.H)/2
 	rad := math.Min(float64(v.W)/2-2, float64(v.H)-2) // in columns; rows are x2
@@ -104,9 +106,9 @@ func (c *compass) Draw(v *View, ss *Streams, t, dt float64) {
 	v.Set(x, y, '|', 226)
 
 	// Heading in big digits in the middle.
-	deg := math.Mod(c.heading*180/math.Pi+360, 360)
+	deg := math.Mod(math.Mod(math.Round(c.heading*180/math.Pi), 360)+360, 360) // 0..359
 	text := fmt.Sprintf("%03.0f", deg)
-	name := points[int(math.Mod(deg+22.5, 360)/45)]
+	name := points[int(math.Mod(deg+22.5, 360)/45)%len(points)]
 	s := max(1, fitScale(text, int(rad*0.8), int(rad*0.3)))
 	bw, bh := bannerSize(text, s)
 	drawBanner(v, text, int(cx)-bw/2, int(cy)-bh/2, s, '#', 226)
