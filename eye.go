@@ -200,12 +200,16 @@ func cellNoise(x, y int) float64 {
 	return float64(h&0xffff) / 65536
 }
 
-// eyeFade is 1 at the eye opening and falls off gently with distance from
-// its edge, so the lids and crease show as a soft halo that dissolves into
-// black rather than a lump of lit skin.
+// eyeFade is 1 at the eye opening and dissolves outward: briefly at the
+// corners, but slowly above and below, so more of the lids, the crease and
+// the cheek show, fading gradually into black.
 func eyeFade(x, y float64) float64 {
-	f := clamp01((0.42 - almond(x, y)) / 0.36) // solid only at the lids, gone by ~0.42
-	return f * f * f * (3 - 2*f)             // steep: the spray thins out fast
+	lid := 0.4 * math.Sqrt(clamp01(1-x*x)) // half-height of the opening here
+	dx := math.Max(0, math.Abs(x)-0.85) / 0.4
+	dy := math.Max(0, math.Abs(y)-lid) / 1.05
+	r := math.Hypot(dx, dy)
+	f := clamp01(1 - r)
+	return f * f * (3 - 2*f) // smooth, with a long soft tail
 }
 
 // camera frames the eye and some face around it; returns the pixel
