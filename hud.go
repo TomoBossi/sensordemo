@@ -31,6 +31,23 @@ func (s *Linear) Pos(v float64) float64 {
 	return (v - s.Min) / (s.Max - s.Min)
 }
 
+// Relative starts at the first value seen and grows upward, for counters
+// such as the step counter.
+type Relative struct {
+	Min, Max float64
+	set      bool
+}
+
+func (s *Relative) Pos(v float64) float64 {
+	if !s.set {
+		s.Min, s.Max, s.set = v, v+10, true
+	}
+	if v > s.Max {
+		s.Max = v + (v-s.Min)*0.25
+	}
+	return (v - s.Min) / (s.Max - s.Min)
+}
+
 // Asymptotic has no upper limit: v/(v+K) puts K at the middle of the bar, is
 // most sensitive around typical values, and approaches the end without ever
 // running off it. Meant for light.
