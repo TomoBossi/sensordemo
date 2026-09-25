@@ -61,6 +61,21 @@ func RotZ(a float64) Mat3 {
 	return Mat3{{c, -s, 0}, {s, c, 0}, {0, 0, 1}}
 }
 
+// Heading is where the phone points, in radians clockwise from north, given
+// its device-to-world matrix. Flat on a table that is its top edge (device
+// +y); held upright it is the back of the phone (device -z), which is where
+// the top edge's horizontal direction becomes meaningless. The two are blended
+// by how horizontal each one is, so the switch is smooth.
+func Heading(R Mat3) float64 {
+	top := R.Apply(Vec3{0, 1, 0})
+	back := R.Apply(Vec3{0, 0, -1})
+	wt := math.Hypot(top[0], top[1])
+	wb := math.Hypot(back[0], back[1])
+	e := top[0]*wt + back[0]*wb
+	n := top[1]*wt + back[1]*wb
+	return math.Atan2(e, n)
+}
+
 // FromRotationVector turns an Android rotation-vector reading (x, y, z[, w])
 // into the matrix that takes device coordinates to world coordinates (x east,
 // y north, z up), like SensorManager.getRotationMatrixFromVector.
