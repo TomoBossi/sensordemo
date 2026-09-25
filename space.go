@@ -7,7 +7,7 @@ import (
 func init() {
 	register(entry{
 		name: "space",
-		desc: "a window into a 3D world: turn the phone to look around, walk to move",
+		desc: "a window into a 3D world: turn the phone to look around, glide or walk to move",
 		uses: []string{"game_rotation_vector", "rotation_vector", "step_detector"},
 		new:  func(specs []string) Demo { return &space{} },
 	})
