@@ -12,14 +12,28 @@ type Scale interface {
 	Pos(v float64) float64
 }
 
-// Symmetric is centered on zero; its range grows to fit what it has seen.
-type Symmetric struct{ Max float64 }
+// Symmetric is centered on zero. With Fixed, values beyond ±Max pin to the
+// ends; otherwise the range grows to fit a spike and then shrinks back to
+// Max over a few seconds, so one hard shake doesn't flatten the bar for good.
+type Symmetric struct {
+	Max   float64
+	Fixed bool
+	cur   float64 // current range when not fixed
+}
 
 func (s *Symmetric) Pos(v float64) float64 {
-	if a := math.Abs(v); a > s.Max {
-		s.Max = a * 1.1
+	r := s.Max
+	if !s.Fixed {
+		if s.cur < s.Max {
+			s.cur = s.Max
+		}
+		if a := math.Abs(v); a > s.cur {
+			s.cur = a * 1.1
+		}
+		s.cur = math.Max(s.Max, s.cur*0.99) // called once per frame: ~4 s to settle
+		r = s.cur
 	}
-	return 0.5 + v/(2*s.Max)
+	return 0.5 + v/(2*r)
 }
 
 // Linear runs from Min to Max; Max grows to fit what it has seen.
@@ -177,6 +191,13 @@ func drawGauge(v *View, row int, g *Gauge, r Reading, hz string) {
 	if math.IsNaN(val) {
 		return
 	}
-	p := math.Max(0, math.Min(1, g.Scale.Pos(val)))
-	v.Set(x0+1+int(p*float64(barW-1)+0.5), row, 'O', 214)
+	p := g.Scale.Pos(val)
+	mark := byte('O')
+	switch {
+	case p < 0:
+		p, mark = 0, '<' // beyond the bar's range
+	case p > 1:
+		p, mark = 1, '>'
+	}
+	v.Set(x0+1+int(p*float64(barW-1)+0.5), row, mark, 214)
 }
