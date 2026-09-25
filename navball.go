@@ -8,13 +8,13 @@ import (
 func init() {
 	register(entry{
 		name: "navball",
-		desc: "a 3D navball ball, as in aircraft: heading, pitch and roll of the phone at a glance",
+		desc: "a 3D compass ball, as in aircraft: heading, pitch and roll of the phone at a glance",
 		uses: []string{"magnetic_field", "geomagnetic_rotation_vector"},
 		new:  func(specs []string) Demo { return &navball{} },
 	})
 }
 
-// navball draws a navball: a sphere fixed to the world (sky above, ground
+// navball draws a 3D compass ball: a sphere fixed to the world (sky above, ground
 // below, a horizon, meridians labeled N/E/S/W and parallels labeled with
 // their elevation), seen from the phone. The ball's center is where the
 // phone's long axis points, so turning the phone brings other directions to
