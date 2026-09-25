@@ -38,6 +38,7 @@ rotating the phone just re-lays it out.
 | `maze` | gravity | a marble maze: tilt to roll the ball to the flag; holes in dead ends send you back; your time and best time. `n` new maze, `r` restart |
 | `detector` | magnetometer | a metal detector: zero it away from metal (`c`), then sweep over walls and objects; a needle dial, pings that speed up near steel and magnets, a strip chart, and optional vibration (`b`) |
 | `homing` | location + rotation vector | a 3D arrow over a compass disc pointing to a saved place, with the distance and walking time. Save where you stand with `sensordemo homing save` (or `save:NAME`), point with `sensordemo homing [NAME]`; places stay in `~/.config/sensordemo/places.json` |
+| `planetarium` | rotation vector + location | point the phone at the sky: the real stars (to magnitude 5, colored by temperature), constellation figures and names, planets, Sun and Moon (with phase) in that direction right now, with the horizon and cardinal points. `+`/`-` time-lapse, `l` lines, `n` names |
 | `scope` | any | an oscilloscope: every value of any sensors as scrolling traces. `space` pause |
 
 ## Compass accuracy
@@ -79,6 +80,13 @@ API (overpass-api.de). That request contains your approximate position: the
 center and radius of the area, a few hundred meters. Results are cached in
 `~/.cache/sensordemo/osm/`, so revisiting an area doesn't ask again. Delete
 that directory to clear it. Map data © OpenStreetMap contributors, ODbL.
+
+## Data
+
+The planetarium's stars and constellations come from
+[d3-celestial](https://github.com/ofrohn/d3-celestial) (BSD-3-Clause), whose
+star data is from the HYG database (CC BY-SA 2.5); planet positions use
+JPL's approximate Keplerian elements. `skydata.go` is generated from them.
 
 ## Building
 
