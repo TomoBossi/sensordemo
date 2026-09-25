@@ -27,7 +27,7 @@ func (c *compass) Setup(ss *Streams) ([]*Gauge, error) {
 	if _, err := ss.Subscribe("rotation_vector", 30); err != nil {
 		return nil, err
 	}
-	mag, err := ss.Subscribe("magnetic_field", 20)
+	mag, err := subscribeMagnetics(ss)
 	if err != nil {
 		return nil, err
 	}
@@ -55,6 +55,9 @@ func (c *compass) Draw(v *View, ss *Streams, t, dt float64) {
 		// The top of the phone (device +y) in world coordinates (x east,
 		// y north); its angle from north is the heading.
 		h := Heading(R.Mul(screenFrame(ss)))
+		if d, ok := declination(ss); ok {
+			h += d * math.Pi / 180 // magnetic to true north
+		}
 		if !c.has {
 			c.heading, c.has = h, true
 		}
@@ -114,5 +117,12 @@ func (c *compass) Draw(v *View, ss *Streams, t, dt float64) {
 	v.Text(int(cx)-len(name)/2, int(cy)+bh/2+1, name, 250)
 	if !c.has {
 		v.Text(1, v.H-1, "waiting for rotation vector...", 244)
+	} else {
+		line, warn := magStatus(ss, v.W)
+		col := uint8(244)
+		if warn {
+			col = 203
+		}
+		v.Text(max(0, (v.W-len(line))/2), v.H-1, line[:min(len(line), v.W)], col)
 	}
 }

@@ -23,7 +23,7 @@ func init() {
 // vector, which Android fuses from the magnetometer, gyroscope and
 // accelerometer.
 type navball struct {
-	nose bool // view along the long axis instead of out of the back
+	view int // viewWindow, viewGlobe or viewNose
 	has  bool
 	pose Mat3 // smoothed screen-to-world matrix
 	// per-cell sky directions of the last frame, for grid edge detection
@@ -35,7 +35,7 @@ func (c *navball) Setup(ss *Streams) ([]*Gauge, error) {
 	if _, err := ss.Subscribe("rotation_vector", 30); err != nil {
 		return nil, err
 	}
-	mag, err := ss.Subscribe("magnetic_field", 20)
+	mag, err := subscribeMagnetics(ss)
 	if err != nil {
 		return nil, err
 	}
@@ -46,14 +46,22 @@ func (c *navball) Help() []string {
 	return []string{
 		"The ball is the world around you: sky above, ground below, N E S W on the horizon, elevation lines every 30 degrees.",
 		"Hold the phone up in front of you: the center, marked -=o=-, is the direction you face, as if looking through the phone. Turn around, look up or down, tilt it.",
-		"v  switch to the navigation view: the center follows the phone's long axis instead (best with the phone flat)",
+		"v  cycle views: window (you look out through the phone), globe (the same ball as an object in the room, seen from outside: it turns the other way), nose (the center follows the phone's long axis, best with the phone flat)",
 		"If it drifts, wave the phone in a figure 8 to recalibrate the magnetometer; magnets and metal nearby bend it too.",
 	}
 }
 
+const (
+	viewWindow = iota // center = where the back of the phone faces, seen from inside
+	viewGlobe         // the same ball seen from outside, like an object in the room
+	viewNose          // center = where the long axis points (aircraft style)
+)
+
+var viewNames = []string{"window", "globe", "nose"}
+
 func (c *navball) Key(k byte) {
 	if k == 'v' {
-		c.nose = !c.nose
+		c.view = (c.view + 1) % len(viewNames)
 	}
 }
 
@@ -64,8 +72,8 @@ func (c *navball) Key(k byte) {
 // long axis and up is out of the screen (the aircraft convention, natural
 // with the phone flat). Either way (right, up, forward) is left-handed, as in
 // a camera: the ball is seen from the inside, so east is right of north.
-func camera(R Mat3, nose bool) (right, up, fwd Vec3) {
-	if nose {
+func camera(R Mat3, view int) (right, up, fwd Vec3) {
+	if view == viewNose {
 		return R.Apply(Vec3{1, 0, 0}), R.Apply(Vec3{0, 0, 1}), R.Apply(Vec3{0, 1, 0})
 	}
 	return R.Apply(Vec3{1, 0, 0}), R.Apply(Vec3{0, 1, 0}), R.Apply(Vec3{0, 0, -1})
@@ -89,7 +97,14 @@ func (c *navball) Draw(v *View, ss *Streams, t, dt float64) {
 		v.Text((v.W-len(msg))/2, v.H/2, msg, 244)
 		return
 	}
-	right, up, fwd := camera(c.pose, c.nose)
+	right, up, fwd := camera(c.pose, c.view)
+	decl, _ := declination(ss) // 0 without a fix: magnetic north
+	// Globe view: the ball is seen from outside, so the side facing you
+	// shows the directions toward you, and it turns the opposite way.
+	depth := 1.0
+	if c.view == viewGlobe {
+		depth = -1
+	}
 
 	// Ball geometry: rows are twice as tall as columns.
 	rr := math.Min(float64(v.H-4)/2, float64(v.W)/4-1) // radius in rows
@@ -111,9 +126,9 @@ func (c *navball) Draw(v *View, ss *Streams, t, dt float64) {
 				continue
 			}
 			pz := math.Sqrt(1 - r2)
-			d := right.Scale(px).Add(up.Scale(py)).Add(fwd.Scale(pz))
+			d := right.Scale(px).Add(up.Scale(py)).Add(fwd.Scale(pz * depth))
 			c.el[i] = math.Asin(math.Max(-1, math.Min(1, d[2]))) * 180 / math.Pi
-			c.az[i] = math.Mod(math.Atan2(d[0], d[1])*180/math.Pi+360, 360)
+			c.az[i] = math.Mod(math.Atan2(d[0], d[1])*180/math.Pi+decl+720, 360) // true azimuth
 		}
 	}
 
@@ -155,8 +170,8 @@ func (c *navball) Draw(v *View, ss *Streams, t, dt float64) {
 
 	// Labels, where their directions face the viewer.
 	place := func(az, el float64, text string, col uint8) {
-		d := skyDir(az, el)
-		if d.Dot(fwd) < 0.25 {
+		d := skyDir(az-decl, el) // true azimuth to the magnetic frame of the pose
+		if d.Dot(fwd)*depth < 0.25 {
 			return // behind the ball, or too close to its rim to read
 		}
 		x := int(cx + d.Dot(right)*2*rr + 0.5)
@@ -170,7 +185,8 @@ func (c *navball) Draw(v *View, ss *Streams, t, dt float64) {
 		}
 		place(float64(i)*45, 6, p, col)
 	}
-	nose := math.Mod(math.Atan2(fwd[0], fwd[1])*180/math.Pi+360, 360)
+	center := fwd.Scale(depth)
+	nose := math.Mod(math.Atan2(center[0], center[1])*180/math.Pi+decl+360, 360)
 	for _, e := range []float64{-60, -30, 30, 60} {
 		place(nose+18, e, fmt.Sprintf("%+.0f", e), 229)
 	}
@@ -179,11 +195,9 @@ func (c *navball) Draw(v *View, ss *Streams, t, dt float64) {
 	v.Text(int(cx)-2, int(cy), "-=o=-", 226)
 
 	// Readout under the ball.
-	h := math.Atan2(fwd[0], fwd[1]) // where the center points
-	if math.Hypot(fwd[0], fwd[1]) < 0.05 {
-		h = Heading(c.pose) // center at a pole: fall back to the phone's heading
-	}
-	heading := math.Mod(math.Round(h*180/math.Pi)+360, 360)
+	// Heading and pitch are the phone's (long axis, or the back when held
+	// upright), the same as the compass, whatever the view shows.
+	heading := math.Mod(math.Round(Heading(c.pose)*180/math.Pi+decl)+720, 360)
 	pitch := math.Asin(math.Max(-1, math.Min(1, fwd[2]))) * 180 / math.Pi
 	roll := math.Atan2(-right[2], up[2]) * 180 / math.Pi
 	// Round, and drop the sign of negative zero so it doesn't print "-00".
@@ -195,12 +209,18 @@ func (c *navball) Draw(v *View, ss *Streams, t, dt float64) {
 		roll = 0
 	}
 	name := points[int(math.Mod(heading+22.5, 360)/45)%len(points)]
-	line := fmt.Sprintf("heading %03.0f %-2s   pitch %+03.0f   roll %+04.0f", heading, name, pitch, roll)
+	line := fmt.Sprintf("heading %03.0f %-2s  pitch %+03.0f  roll %+04.0f  [%s]", heading, name, pitch, roll, viewNames[c.view])
 	if len(line) > v.W {
-		line = fmt.Sprintf("%03.0f %s  %+.0f  %+.0f", heading, name, pitch, roll)
+		line = fmt.Sprintf("%03.0f %s  %+.0f  %+.0f  [%s]", heading, name, pitch, roll, viewNames[c.view])
 	}
-	ly := min(int(cy+rr+1.5), v.H-1)
+	ly := min(int(cy+rr+1.5), v.H-2)
 	v.Text((v.W-len(line))/2, ly, line, 250)
+	status, warn := magStatus(ss, v.W)
+	col := uint8(244)
+	if warn {
+		col = 203
+	}
+	v.Text(max(0, (v.W-len(status))/2), ly+1, status[:min(len(status), v.W)], col)
 }
 
 // crosses reports whether a grid line of the given step (0: only the value
