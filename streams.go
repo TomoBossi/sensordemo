@@ -89,6 +89,7 @@ type Streams struct {
 	c       *client.Client
 	sensors []proto.Sensor
 	byKey   map[string]*Stream
+	mock    map[string][]float64 // by sensor type; non-nil means mock mode
 }
 
 func OpenStreams() (*Streams, error) {
@@ -104,7 +105,11 @@ func OpenStreams() (*Streams, error) {
 	return &Streams{c: c, sensors: sensors, byKey: map[string]*Stream{}}, nil
 }
 
-func (ss *Streams) Close() { ss.c.Close() }
+func (ss *Streams) Close() {
+	if ss.c != nil {
+		ss.c.Close()
+	}
+}
 
 // Lookup finds a sensor by exact name or by type (the default of that type),
 // the same way sensord resolves it.
@@ -127,6 +132,9 @@ func (ss *Streams) Lookup(spec string) (proto.Sensor, bool) {
 func (ss *Streams) Subscribe(spec string, hz float64) (*Stream, error) {
 	if s := ss.byKey[spec]; s != nil {
 		return s, nil
+	}
+	if ss.mock != nil {
+		return ss.subscribeMock(spec)
 	}
 	sub, err := ss.c.Subscribe(spec, hz)
 	if err != nil {

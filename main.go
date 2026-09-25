@@ -117,13 +117,18 @@ func list() {
 
 func main() {
 	color := false
-	snapshot := ""
+	snapshot, mock := "", ""
 	var args []string
 	for i := 1; i < len(os.Args); i++ {
 		switch a := os.Args[i]; a {
 		case "--snapshot": // hidden: render ~1 s off-screen and print the last frame
 			if i+1 < len(os.Args) {
 				snapshot = os.Args[i+1]
+				i++
+			}
+		case "--mock": // hidden: fixed readings instead of sensord (see mock.go)
+			if i+1 < len(os.Args) {
+				mock = os.Args[i+1]
 				i++
 			}
 		case "--color", "-c":
@@ -146,7 +151,7 @@ func main() {
 	if snapshot != "" {
 		var w, h int
 		fmt.Sscanf(snapshot, "%dx%d", &w, &h)
-		if err := snap(args[0], w, h); err != nil {
+		if err := snap(args[0], w, h, mock); err != nil {
 			fmt.Fprintln(os.Stderr, "sensordemo:", err)
 			os.Exit(1)
 		}
@@ -225,8 +230,14 @@ func run(arg string, color bool) error {
 
 // snap renders about a second of frames at w x h without a terminal and prints
 // the last one, for checking demos from scripts.
-func snap(arg string, w, h int) error {
-	ss, err := OpenStreams()
+func snap(arg string, w, h int, mock string) error {
+	var ss *Streams
+	var err error
+	if mock != "" {
+		ss, err = OpenMock(mock)
+	} else {
+		ss, err = OpenStreams()
+	}
 	if err != nil {
 		return err
 	}
