@@ -24,8 +24,14 @@ type space struct {
 	stepMode      bool // p: real steps move you
 	glide         bool // g: glide forward at walking speed
 	stepErr       string
-	pendingToggle bool   // step mode changed; (un)subscribe on the next frame
-	sky           []bool // per cell: the ray saw empty sky (stars may go there)
+	pendingToggle bool // step mode changed; (un)subscribe on the next frame
+
+	// The world is turned so the first view faces away from the sun: the
+	// orientation sensor has no north, so "forward" at start is arbitrary.
+	yaw        Mat3
+	aimed      bool
+	firstCount int
+	sky        []bool // per cell: the ray saw empty sky (stars may go there)
 }
 
 // start is between pillars (the grid puts one at the origin).
@@ -57,7 +63,7 @@ func (s *space) Help() []string {
 		"w / s  step forward / back",
 		"g      glide forward at walking speed (toggle)",
 		"p      step mode: real steps move you (on at start; toggle)",
-		"r      back to the start",
+		"r      back to the start, facing away from the sun",
 	}
 }
 
@@ -74,6 +80,7 @@ func (s *space) Key(k byte) {
 		s.pendingToggle = true
 	case 'r':
 		s.pos, s.target = start, start
+		s.aimed, s.firstCount = false, -1 // re-aim away from the sun now
 	}
 }
 
@@ -88,6 +95,25 @@ func (s *space) Draw(v *View, ss *Streams, t, dt float64) {
 	if r := ss.Get("game_rotation_vector").Read(); r.OK {
 		R, _ = FromRotationVector(r.V)
 		R = R.Mul(screenFrame(ss)) // look through the screen as it is displayed
+		if s.firstCount == 0 {
+			s.firstCount = r.Count
+		}
+		// Once the fusion settles, turn the world so you face away from
+		// the sun, 30 degrees off, and see objects lit with shadows
+		// falling away from you.
+		if !s.aimed && (s.firstCount < 0 || r.Count-s.firstCount >= 30) {
+			fwd := R.Apply(Vec3{0, 0, -1})
+			if math.Hypot(fwd[0], fwd[1]) < 0.3 {
+				fwd = R.Apply(Vec3{0, 1, 0})
+			}
+			face := math.Atan2(fwd[0], fwd[1])        // clockwise from +y
+			sunAz := math.Atan2(sunDir[0], sunDir[1]) // likewise
+			want := sunAz + math.Pi - 30*math.Pi/180
+			s.yaw, s.aimed = RotZ(face-want), true // RotZ turns azimuths by -angle
+		}
+		if s.aimed {
+			R = s.yaw.Mul(R)
+		}
 	} else {
 		// no orientation yet: stand upright looking north, slowly turning
 		R = RotZ(t * 0.2).Mul(RotX(math.Pi / 2))
