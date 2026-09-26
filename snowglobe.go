@@ -3,8 +3,6 @@ package main
 import (
 	"math"
 	"math/rand"
-	"strconv"
-	"time"
 )
 
 func init() {
@@ -35,7 +33,17 @@ type snowglobe struct {
 	S      float64
 	cx, cy float64 // screen position of the globe center
 	px     []pixel
-	plaque [2]int // where the plaque's text goes, -1 if hidden
+	built  bool
+
+	// The view: the globe seen from where the eye is, which moves as the
+	// phone turns (head-coupled), and a little springy sway on shakes.
+	camD, camU, camR Vec3 // view direction, screen up, screen right
+	toWorld          Mat3 // globe (screen) frame to the room, for reflections
+	rot, rest        Mat3 // orientation now, and the resting one it drifts to
+	hasRot           bool
+	off, offV        [2]float64 // sway, globe radii
+	drawn            [5]float64 // view the picture was rendered for
+	shadows          []float32  // moonlight per point of a grid over the globe
 
 	// Height map of the scene tops and the settled snow on them.
 	top   []float64 // scene height per cell, NaN where the floor is outside the glass
@@ -79,6 +87,7 @@ type pixel struct {
 
 const (
 	sgN      = 48    // height map cells per side, over [-1, 1]
+	sgSG     = 32    // shadow grid points per side
 	sgFlakes = 2200  // all the snow, as flakes
 	sgMass   = 0.028 // snow depth one flake adds to a cell
 	sgElev   = 0.32  // camera elevation, radians
@@ -104,12 +113,9 @@ const (
 	mNose
 	mCoal
 	mBase
-	mPlaque
 )
 
 var (
-	sgCam    = Vec3{0, -math.Sin(sgElev), -math.Cos(sgElev)} // view direction
-	sgUp     = Vec3{0, math.Cos(sgElev), -math.Sin(sgElev)}  // screen up
 	sgMoon   = Vec3{-0.55, 0.7, 0.45}.Norm()
 	sgCabin  = Vec3{-0.3, 0, -0.15}
 	sgLampAt = Vec3{0.12, 0, 0.3}
@@ -137,7 +143,8 @@ func (g *snowglobe) Setup(ss *Streams) ([]*Gauge, error) {
 			return nil, err
 		}
 	}
-	ss.Subscribe("gyroscope", 30) // optional: twisting spins the liquid
+	ss.Subscribe("gyroscope", 30)            // optional: twisting spins the liquid
+	ss.Subscribe("game_rotation_vector", 60) // optional: turning shows other sides
 	lin, err := ss.Subscribe("linear_acceleration", 50)
 	if err != nil {
 		return nil, err
@@ -149,7 +156,7 @@ func (g *snowglobe) Setup(ss *Streams) ([]*Gauge, error) {
 func (g *snowglobe) Help() []string {
 	return []string{
 		"Shake the phone: the snow flies up and swirls through the whole globe, then drifts down and piles up on the ground, the roof, the pines and the snowman. The harder you shake, the more it picks up.",
-		"Twist the phone to spin the liquid. Tilt it and the snow slides and falls that way.",
+		"Twist the phone to spin the liquid. Turn it and you see the globe from other sides, with the glass catching the room's lights; it settles back to the front view when you hold still. Tilt it and the snow falls that way.",
 		"space  shake    r  start over",
 	}
 }
@@ -159,7 +166,7 @@ func (g *snowglobe) Key(k byte) {
 	case ' ':
 		g.kick = 0.5
 	case 'r':
-		g.w = 0
+		g.reset()
 	}
 }
 
@@ -167,6 +174,22 @@ func (g *snowglobe) Key(k byte) {
 func (g *snowglobe) scene(p Vec3) (float64, uint8) {
 	d, m := sceneLocal(sgLocal(p))
 	return d * sgK, m
+}
+
+// Where each object stands on the ground, computed once.
+var sgCabinY, sgLampY, sgManY, sgPineY = sgGround(sgCabin[0], sgCabin[2]) - 0.02,
+	sgGround(sgLampAt[0], sgLampAt[2]), sgGround(sgMan[0], sgMan[2]), func() (y []float64) {
+		for _, pn := range sgPines {
+			y = append(y, sgGround(pn[0], pn[1]))
+		}
+		return
+	}()
+
+// far reports whether p is farther from a bounding sphere than the nearest
+// surface found so far, so the object inside needn't be evaluated.
+func far(p Vec3, cx, cy, cz, r, d float64) bool {
+	dx, dy, dz := p[0]-cx, p[1]-cy, p[2]-cz
+	return math.Sqrt(dx*dx+dy*dy+dz*dz)-r > d
 }
 
 func sceneLocal(p Vec3) (float64, uint8) {
@@ -179,19 +202,24 @@ func sceneLocal(p Vec3) (float64, uint8) {
 
 	// Cabin: log walls, a gabled roof, a stone chimney.
 	c := sgCabin
-	yb := sgGround(c[0], c[2]) - 0.02
-	q := Vec3{p[0] - c[0], p[1] - yb, p[2] - c[2]}
-	add(sdBox(q.Sub(Vec3{0, 0.12, 0}), Vec3{0.2, 0.12, 0.14}), mWall)
-	r := q.Sub(Vec3{0, 0.24, 0})
-	const rw, rh = 0.2, 0.16
-	roof := math.Max(math.Max(-r[1], (math.Abs(r[2])*rh+r[1]*rw-rw*rh)/math.Hypot(rw, rh)), math.Abs(r[0])-0.24)
-	add(roof, mRoof)
-	add(sdBox(q.Sub(Vec3{0.1, 0.33, -0.05}), Vec3{0.03, 0.09, 0.03}), mStone)
+	yb := sgCabinY
+	if !far(p, c[0], yb+0.2, c[2], 0.43, d) {
+		q := Vec3{p[0] - c[0], p[1] - yb, p[2] - c[2]}
+		add(sdBox(q.Sub(Vec3{0, 0.12, 0}), Vec3{0.2, 0.12, 0.14}), mWall)
+		r := q.Sub(Vec3{0, 0.24, 0})
+		const rw, rh = 0.2, 0.16
+		roof := math.Max(math.Max(-r[1], (math.Abs(r[2])*rh+r[1]*rw-rw*rh)/math.Hypot(rw, rh)), math.Abs(r[0])-0.24)
+		add(roof, mRoof)
+		add(sdBox(q.Sub(Vec3{0.1, 0.33, -0.05}), Vec3{0.03, 0.09, 0.03}), mStone)
+	}
 
 	// Pines: three cones each on a trunk.
-	for _, pn := range sgPines {
+	for i, pn := range sgPines {
 		s := pn[2]
-		qb := Vec3{p[0] - pn[0], p[1] - sgGround(pn[0], pn[1]), p[2] - pn[1]}
+		if far(p, pn[0], sgPineY[i]+0.25*s, pn[1], 0.33*s, d) {
+			continue
+		}
+		qb := Vec3{p[0] - pn[0], p[1] - sgPineY[i], p[2] - pn[1]}
 		rr := math.Hypot(qb[0], qb[2])
 		add(math.Max(rr-0.025*s, math.Max(-qb[1], qb[1]-0.12*s)), mTrunk)
 		for _, tier := range [][3]float64{{0.08, 0.17, 0.22}, {0.2, 0.13, 0.19}, {0.31, 0.09, 0.16}} {
@@ -204,13 +232,18 @@ func sceneLocal(p Vec3) (float64, uint8) {
 
 	// Lamppost with a glowing head.
 	l := sgLampAt
-	ql := Vec3{p[0] - l[0], p[1] - sgGround(l[0], l[2]), p[2] - l[2]}
-	add(math.Max(math.Hypot(ql[0], ql[2])-0.013, math.Max(-ql[1], ql[1]-0.4)), mPost)
-	add(sdSphere(ql.Sub(Vec3{0, 0.43, 0}), 0, 0.04), mBulb)
+	if !far(p, l[0], sgLampY+0.23, l[2], 0.26, d) {
+		ql := Vec3{p[0] - l[0], p[1] - sgLampY, p[2] - l[2]}
+		add(math.Max(math.Hypot(ql[0], ql[2])-0.013, math.Max(-ql[1], ql[1]-0.4)), mPost)
+		add(sdSphere(ql.Sub(Vec3{0, 0.43, 0}), 0, 0.04), mBulb)
+	}
 
 	// Snowman.
 	sm := sgMan
-	qs := Vec3{p[0] - sm[0], p[1] - sgGround(sm[0], sm[2]), p[2] - sm[2]}
+	if far(p, sm[0], sgManY+0.18, sm[2], 0.21, d) {
+		return d, m
+	}
+	qs := Vec3{p[0] - sm[0], p[1] - sgManY, p[2] - sm[2]}
 	body := smin(smin(sdSphere(qs.Sub(Vec3{0, 0.07, 0}), 0, 0.085), sdSphere(qs.Sub(Vec3{0, 0.2, 0}), 0, 0.062), 0.02),
 		sdSphere(qs.Sub(Vec3{0, 0.3, 0}), 0, 0.045), 0.015)
 	add(body, mSnowman)
@@ -223,20 +256,17 @@ func sgBase(p Vec3) (float64, uint8) {
 	const top, bot = -0.8, -1.3
 	rho := math.Hypot(p[0], p[2])
 	rad := 0.72 + (top-p[1])*0.42 - 0.03*math.Exp(-math.Pow((p[1]+1.02)/0.05, 2)) // a groove
-	d := math.Max((rho-rad)*0.9, math.Max(p[1]-top, bot-p[1]))
-	// The plaque, on the front face.
-	pz := 0.72 + (top+1.1)*0.42
-	pl := sdBox(Vec3{p[0], p[1] + 1.1, p[2] - pz}, Vec3{0.3, 0.075, 0.03})
-	if pl < d {
-		return pl, mPlaque
-	}
-	return d, mBase
+	return math.Max((rho-rad)*0.9, math.Max(p[1]-top, bot-p[1])), mBase
 }
 
 func (g *snowglobe) all(p Vec3) (float64, uint8) {
 	b, bm := sgBase(p)
+	glass := p.Len() - 0.99
+	if glass > b {
+		return b, bm
+	}
 	s, sm := g.scene(p)
-	s = math.Max(s, p.Len()-0.99) // the village stays inside the glass
+	s = math.Max(s, glass) // the village stays inside the glass
 	if s < b {
 		return s, sm
 	}
@@ -269,21 +299,67 @@ func (g *snowglobe) shadow(p, dir Vec3) float64 {
 	return 0.15 + 0.85*clamp01(res)
 }
 
+// buildShadows samples the moonlight over a grid once; the light is fixed
+// to the globe, so shadows never change. Points inside objects are marked
+// negative, and lookups step off the surface to avoid them.
+func (g *snowglobe) buildShadows() {
+	g.shadows = make([]float32, sgSG*sgSG*sgSG)
+	parallelRows(sgSG, func(k int) {
+		for j := 0; j < sgSG; j++ {
+			for i := 0; i < sgSG; i++ {
+				p := Vec3{sgGridX(i), sgGridX(j), sgGridX(k)}
+				v := float32(1)
+				if p.Len() < 1 {
+					if d, _ := g.scene(p); d < 0 {
+						v = -1
+					} else {
+						v = float32(g.shadow(p, sgMoon))
+					}
+				}
+				g.shadows[(k*sgSG+j)*sgSG+i] = v
+			}
+		}
+	})
+}
+
+func sgGridX(i int) float64 { return float64(i)/(sgSG-1)*2 - 1 }
+
+// shadowAt interpolates the shadow grid, ignoring samples inside objects.
+func (g *snowglobe) shadowAt(p Vec3) float64 {
+	f := func(x float64) (int, float64) {
+		u := (x + 1) / 2 * (sgSG - 1)
+		i := max(0, min(sgSG-2, int(u)))
+		return i, clamp01(u - float64(i))
+	}
+	i, fx := f(p[0])
+	j, fy := f(p[1])
+	k, fz := f(p[2])
+	sum, wsum := 0.0, 0.0
+	for c := 0; c < 8; c++ {
+		di, dj, dk := c&1, c>>1&1, c>>2
+		v := g.shadows[((k+dk)*sgSG+j+dj)*sgSG+i+di]
+		if v < 0 {
+			continue
+		}
+		w := (fx*float64(di) + (1-fx)*float64(1-di)) * (fy*float64(dj) + (1-fy)*float64(1-dj)) * (fz*float64(dk) + (1-fz)*float64(1-dk))
+		sum += float64(v) * w
+		wsum += w
+	}
+	if wsum < 1e-6 {
+		return 0.5
+	}
+	return sum / wsum
+}
+
 func (g *snowglobe) lampPos() Vec3 {
 	l := sgLampAt.Add(Vec3{0, sgGround(sgLampAt[0], sgLampAt[2]) + 0.43, 0})
 	return Vec3{l[0] * sgK, l[1]*sgK + sgOff, l[2] * sgK}
 }
 
-// layout renders the static picture into the cache and builds the height
-// map. It runs when the view size changes.
-func (g *snowglobe) layout(w, h int) {
-	g.w, g.h = w, h
-	g.S = math.Min(float64(w)/2.2, 2*float64(h)/2.75)
-	g.cx = float64(w) / 2
-	g.cy = float64(h)/2 - 0.3*g.S/2
-	g.px = make([]pixel, w*h)
-	g.wbuf, g.zbuf = make([]float64, w*h), make([]float64, w*h)
-
+// build makes what never changes: the height map of the scene's tops and
+// the shadow grid. Then it throws the snow in.
+func (g *snowglobe) build() {
+	g.built = true
 	g.top = make([]float64, sgN*sgN)
 	g.onGnd = make([]bool, sgN*sgN)
 	for i := range g.top {
@@ -303,19 +379,45 @@ func (g *snowglobe) layout(w, h int) {
 			y -= math.Max(d, 0.003)
 		}
 	}
-	lamp := g.lampPos()
-	parallelRows(h, func(y int) {
-		for x := 0; x < w; x++ {
-			g.px[y*w+x] = g.render(x, y, lamp)
+	g.buildShadows()
+	g.reset()
+}
+
+// layout sizes the picture for a view.
+func (g *snowglobe) layout(w, h int) {
+	g.w, g.h = w, h
+	g.S = math.Min(float64(w)/2.2, 2*float64(h)/2.75)
+	g.px = make([]pixel, w*h)
+	g.wbuf, g.zbuf = make([]float64, w*h), make([]float64, w*h)
+	g.drawn = [5]float64{math.NaN()}
+}
+
+// renderAll ray marches the picture for the current view, when it has
+// moved enough to show.
+func (g *snowglobe) renderAll() {
+	g.cx = float64(g.w)/2 + g.off[0]*g.S
+	g.cy = float64(g.h)/2 - 0.3*g.S/2 - g.off[1]*g.S/2
+	view := [5]float64{g.camD[0], g.camD[1], g.camD[2], g.cx, g.cy}
+	moved := false
+	for i := range view {
+		lim := 0.004
+		if i >= 3 {
+			lim = 0.15 // cells
 		}
-	})
-	g.plaque = [2]int{-1, -1}
-	if u, v, ok := g.project(Vec3{0, -1.1, 0.72 + (-0.8+1.1)*0.42 + 0.03}); ok {
-		if i := v*w + u; g.px[i].mat == mPlaque {
-			g.plaque = [2]int{u, v}
+		if !(math.Abs(view[i]-g.drawn[i]) < lim) {
+			moved = true
 		}
 	}
-	g.reset()
+	if !moved {
+		return
+	}
+	g.drawn = view
+	lamp := g.lampPos()
+	parallelRows(g.h, func(y int) {
+		for x := 0; x < g.w; x++ {
+			g.px[y*g.w+x] = g.render(x, y, lamp)
+		}
+	})
 }
 
 func (g *snowglobe) cellXZ(i int) (float64, float64) {
@@ -332,8 +434,8 @@ func (g *snowglobe) cellAt(x, z float64) int {
 
 // project maps a globe point to a screen cell.
 func (g *snowglobe) project(p Vec3) (int, int, bool) {
-	x := int(math.Floor(g.cx + p[0]*g.S))
-	y := int(math.Floor(g.cy - p.Dot(sgUp)*g.S/2))
+	x := int(math.Floor(g.cx + p.Dot(g.camR)*g.S))
+	y := int(math.Floor(g.cy - p.Dot(g.camU)*g.S/2))
 	return x, y, x >= 0 && y >= 0 && x < g.w && y < g.h
 }
 
@@ -347,7 +449,6 @@ var (
 	sgIron    = []uint8{235, 237, 240, 243}
 	sgWhite   = []uint8{243, 245, 248, 251, 253, 255, 231}
 	sgWood    = []uint8{52, 88, 94, 130, 136, 173, 180, 223}
-	sgGold    = []uint8{94, 136, 178, 220, 221, 228}
 	sgSnowC   = []uint8{245, 248, 250, 252, 254, 255, 231}
 	sgSnowW   = []uint8{180, 223, 224, 230, 231}
 	sgFlakeC  = []uint8{244, 248, 252, 255, 231}
@@ -364,7 +465,8 @@ func (g *snowglobe) render(x, y int, lamp Vec3) pixel {
 	px := pixel{ch: ' ', cell: -1, depth: math.Inf(1)}
 	u := (float64(x) + 0.5 - g.cx) / g.S
 	v := (g.cy - float64(y) - 0.5) * 2 / g.S
-	o := Vec3{u, 0, 0}.Add(sgUp.Scale(v)).Sub(sgCam.Scale(3))
+	D := g.camD
+	o := g.camR.Scale(u).Add(g.camU.Scale(v)).Sub(D.Scale(3))
 	r2 := u*u + v*v
 	inGlobe := r2 < 1
 
@@ -372,7 +474,7 @@ func (g *snowglobe) render(x, y int, lamp Vec3) pixel {
 	hit := false
 	var m uint8
 	for i := 0; i < 160 && t < 6; i++ {
-		d, mm := g.all(o.Add(sgCam.Scale(t)))
+		d, mm := g.all(o.Add(D.Scale(t)))
 		if d < 0.0015 {
 			hit, m = true, mm
 			break
@@ -380,17 +482,17 @@ func (g *snowglobe) render(x, y int, lamp Vec3) pixel {
 		t += math.Max(d, 0.002)
 	}
 	// Where the ray enters and leaves the glass.
-	b := o.Dot(sgCam)
+	b := o.Dot(D)
 	disc := b*b - (o.Dot(o) - 1)
 	tIn, tOut := math.Inf(1), math.Inf(1)
 	if disc > 0 {
 		tIn, tOut = -b-math.Sqrt(disc), -b+math.Sqrt(disc)
 	}
-	px.glass = inGlobe && (!hit || m != mBase && m != mPlaque || t > tIn)
+	px.glass = inGlobe && (!hit || m != mBase || t > tIn)
 	if !hit {
 		if inGlobe {
 			// The painted night on the back of the glass: a few stars.
-			e := o.Add(sgCam.Scale(tOut))
+			e := o.Add(D.Scale(tOut))
 			px.depth = tOut
 			if e[1] > -0.2 {
 				hsh := hash2(int(e[0]*40), int(e[1]*40), 3)
@@ -399,10 +501,10 @@ func (g *snowglobe) render(x, y int, lamp Vec3) pixel {
 				}
 			}
 		}
-		g.glassOver(&px, u, v, r2, inGlobe && px.glass)
+		g.glassOver(&px, o.Add(D.Scale(tIn)), r2, inGlobe && px.glass, true)
 		return px
 	}
-	p := o.Add(sgCam.Scale(t))
+	p := o.Add(D.Scale(t))
 	n := g.normal(p)
 	px.mat, px.depth = m, t
 	if !px.glass {
@@ -412,7 +514,7 @@ func (g *snowglobe) render(x, y int, lamp Vec3) pixel {
 	var sh float64 = 1
 	inside := p.Len() < 0.995
 	if inside {
-		sh = g.shadow(p, sgMoon)
+		sh = g.shadowAt(p.Add(n.Scale(0.05)))
 	}
 	diff := math.Max(0, n.Dot(sgMoon)) * sh
 	lamp3 := 0.0
@@ -422,7 +524,7 @@ func (g *snowglobe) render(x, y int, lamp Vec3) pixel {
 		lamp3 = math.Max(0, n.Dot(ld.Scale(1/dist))) * 0.9 / (1 + 30*dist*dist)
 	}
 	light := 0.12 + 0.75*diff + lamp3
-	view := sgCam.Scale(-1)
+	view := D.Scale(-1)
 	spec := math.Pow(math.Max(0, n.Dot(sgMoon.Add(view).Norm())), 30) * sh
 
 	switch m {
@@ -466,8 +568,6 @@ func (g *snowglobe) render(x, y int, lamp Vec3) pixel {
 		px.ch, px.col = '>', 208
 	case mBase:
 		px.ch, px.col = sgShade(sgWood, 0.1+0.65*diff+0.7*spec, "=+#%@")
-	case mPlaque:
-		px.ch, px.col = sgShade(sgGold, 0.3+0.5*diff+0.6*spec, "=")
 	}
 
 	// Snow can lie on surfaces that face up and are the top of their
@@ -479,25 +579,41 @@ func (g *snowglobe) render(x, y int, lamp Vec3) pixel {
 			px.warm = clamp01(lamp3 * 3)
 		}
 	}
-	g.glassOver(&px, u, v, r2, px.glass)
+	g.glassOver(&px, o.Add(D.Scale(tIn)), r2, px.glass, false)
 	return px
 }
 
-// glassOver adds the glass itself: a thin rim and a curved reflection of a
-// window on the upper left.
-func (g *snowglobe) glassOver(px *pixel, u, v, r2 float64, glass bool) {
+// Lights in the room, reflected by the glass: a ceiling lamp and a window.
+// Directions in the world frame of the rotation vector (z up).
+var sgRoomLights = []Vec3{{0, 0, 1}, Vec3{0.8, 0.3, 0.45}.Norm()}
+
+// glassOver adds the glass itself: a thin rim, and the room's lights
+// reflected in it, which slide over the sphere as the phone turns. at is
+// where the view ray enters the glass. Soft sheen is only drawn over the
+// empty back of the globe, to keep the scene readable.
+func (g *snowglobe) glassOver(px *pixel, at Vec3, r2 float64, glass, empty bool) {
 	if !glass {
 		return
 	}
-	r := math.Sqrt(r2)
-	a := math.Atan2(v, u)
+	if r2 > 0.95*0.95 {
+		n := at.Norm()
+		px.ov, px.ovCol = lineChar(-n.Dot(g.camU), n.Dot(g.camR)*2), 110
+		return
+	}
+	n := at.Norm()
+	D := g.camD
+	r := g.toWorld.Apply(D.Sub(n.Scale(2 * D.Dot(n))))
+	best := 0.0
+	for _, l := range sgRoomLights {
+		best = math.Max(best, r.Dot(l))
+	}
 	switch {
-	case r > 0.965:
-		px.ov, px.ovCol = lineChar(-v, u*2), 110
-	case r > 0.85 && r < 0.885 && a > 2.0 && a < 2.6:
-		px.ov, px.ovCol = '\'', 152
-	case math.Hypot(u+0.43, v-0.52) < 0.035:
-		px.ov, px.ovCol = '*', 231
+	case best > 0.995:
+		px.ov, px.ovCol = '@', 231
+	case best > 0.985:
+		px.ov, px.ovCol = '*', 255
+	case best > 0.93 && empty:
+		px.ov, px.ovCol = '.', 152
 	}
 }
 
@@ -612,12 +728,17 @@ func (g *snowglobe) Draw(v *View, ss *Streams, t, dt float64) {
 	if v.W < 20 || v.H < 12 {
 		return
 	}
+	if !g.built {
+		g.build()
+	}
 	if v.W != g.w || v.H != g.h {
 		g.layout(v.W, v.H)
 	}
 	dt = math.Min(dt, 0.1)
 	g.sense(ss, dt)
+	g.look(ss, dt)
 	g.simulate(dt, t)
+	g.renderAll()
 	g.compose(v, t)
 }
 
@@ -673,6 +794,54 @@ func (g *snowglobe) sense(ss *Streams, dt float64) {
 // agitate tracks the small-scale churning a shake leaves in the liquid.
 func (g *snowglobe) agitate(dt float64) {
 	g.agit = math.Max(g.agit*math.Exp(-dt/1.2), g.shake.Len())
+}
+
+// look sets the view. The eye is taken to stay where it was while the
+// phone turns, so the globe is seen from the matching side (exaggerated a
+// little, at most 35 degrees); the resting orientation drifts toward the
+// current one over a few seconds, bringing the front view back. Shakes
+// make the globe sway on its base.
+func (g *snowglobe) look(ss *Streams, dt float64) {
+	sf := screenFrame(ss)
+	eye := Vec3{0, 0, 1}
+	g.toWorld = sf
+	if s := ss.Get("game_rotation_vector"); s != nil {
+		if r := s.Read(); r.OK {
+			if R, ok := FromRotationVector(r.V); ok {
+				if !g.hasRot {
+					g.rest, g.hasRot = R, true
+				}
+				g.rot = R
+				g.rest = blendRotation(g.rest, R, math.Min(1, dt/4))
+				eye = sf.T().Apply(R.T().Apply(g.rest.Apply(Vec3{0, 0, 1})))
+				g.toWorld = R.Mul(sf)
+			}
+		}
+	}
+	// Exaggerate and limit the angle away from straight on.
+	if lxy := math.Hypot(eye[0], eye[1]); lxy > 1e-6 {
+		a := math.Min(1.3*math.Atan2(lxy, eye[2]), 35*math.Pi/180)
+		eye = Vec3{eye[0] / lxy * math.Sin(a), eye[1] / lxy * math.Sin(a), math.Cos(a)}
+	}
+	// Then look down on the globe a little, as from the default seat.
+	c, s := math.Cos(sgElev), math.Sin(sgElev)
+	E := Vec3{eye[0], eye[1]*c + eye[2]*s, -eye[1]*s + eye[2]*c}
+	// Never from below the village's floor: always a little from above.
+	if lo := math.Sin(8 * math.Pi / 180); E[1] < lo {
+		k := math.Sqrt((1 - lo*lo) / math.Max(E[0]*E[0]+E[2]*E[2], 1e-9))
+		E = Vec3{E[0] * k, lo, E[2] * k}
+	}
+	g.camD = E.Scale(-1)
+	g.camR = g.camD.Cross(Vec3{0, 1, 0}).Norm()
+	g.camU = g.camR.Cross(g.camD)
+
+	// Sway: a damped spring pushed by the shake, as if the globe sat a
+	// little loose.
+	for i := 0; i < 2; i++ {
+		acc := -70*g.off[i] - 8*g.offV[i] - 0.25*g.shake[i]
+		g.offV[i] += acc * dt
+		g.off[i] = math.Max(-0.1, math.Min(0.1, g.off[i]+g.offV[i]*dt))
+	}
 }
 
 // spawnFor adds swirls for dt of the current shake: more and stronger the
@@ -824,7 +993,7 @@ func (g *snowglobe) compose(v *View, t float64) {
 			continue
 		}
 		i := y*w + x
-		depth := f.p.Dot(sgCam) + 3
+		depth := f.p.Dot(g.camD) + 3
 		if depth > g.px[i].depth-0.01 {
 			continue // behind the scene
 		}
@@ -867,13 +1036,5 @@ func (g *snowglobe) compose(v *View, t float64) {
 			}
 			v.Set(x, y, ch, col)
 		}
-	}
-	if g.plaque[0] >= 0 {
-		year := strconv.Itoa(time.Now().Year())
-		text := "WINTER " + year
-		if g.S < 30 {
-			text = year
-		}
-		v.Text(g.plaque[0]-len(text)/2, g.plaque[1], text, 230)
 	}
 }

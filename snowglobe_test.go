@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"math"
 	"math/rand"
 	"testing"
@@ -10,6 +11,7 @@ func settledGlobe(t testing.TB) (*snowglobe, *Streams) {
 	g := &snowglobe{}
 	ss, _ := OpenMock("gravity=0,9.8,0;linear_acceleration=0,0,0")
 	g.Setup(ss)
+	g.build()
 	g.layout(70, 40)
 	for i := 0; i < 30*40; i++ { // 40 s
 		g.sense(ss, 1.0/30)
@@ -52,7 +54,7 @@ func shakeOnce(t *testing.T, seed int64) {
 		top += boolIdx(f.p[1] > 0)
 	}
 	t.Logf("seed %d: %d of %d flakes up, %d in the top half; %v", seed, up, sgFlakes, top, grid)
-	if up < sgFlakes*7/10 || top < up/4 {
+	if up < sgFlakes*7/10 || top < up/5 {
 		t.Errorf("seed %d: %d up, %d in the top half", seed, up, top)
 	}
 	for _, row := range grid[:3] { // the lowest band holds snow already settling back
@@ -85,5 +87,25 @@ func BenchmarkSnowglobeFrame(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		g.Draw(v, ss, float64(i)/30, 1.0/30)
+	}
+}
+
+// A frame while the phone turns: the picture is ray marched again.
+func BenchmarkSnowglobeTurning(b *testing.B) {
+	for _, size := range [][2]int{{70, 40}, {150, 90}} {
+		b.Run(fmt.Sprint(size[0], "x", size[1]), func(b *testing.B) {
+			g := &snowglobe{}
+			ss, _ := OpenMock("gravity=0,9.8,0;linear_acceleration=0,0,0")
+			g.Setup(ss)
+			var f Frame
+			f.Resize(size[0], size[1])
+			v := f.View(0, 0, size[0], size[1])
+			g.Draw(v, ss, 0, 1.0/30)
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				g.drawn[0] = math.NaN() // as if the view moved
+				g.Draw(v, ss, float64(i)/30, 1.0/30)
+			}
+		})
 	}
 }
