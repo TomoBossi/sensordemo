@@ -26,6 +26,7 @@ import (
 var mockSensors = []proto.Sensor{
 	{Name: "bmi3xy_acc", Type: "accelerometer", MaxHz: 400, Mode: "continuous", Default: true},
 	{Name: "qmc6308", Type: "magnetic_field", MaxHz: 50, Mode: "continuous", Default: true},
+	{Name: "UNCALI_MAG", Type: "magnetic_field_uncalibrated", MaxHz: 50, Mode: "continuous", Default: true},
 	{Name: "bmi3xy_gyro", Type: "gyroscope", MaxHz: 400, Mode: "continuous", Default: true},
 	{Name: "ltr569_l", Type: "light", Mode: "on-change", Default: true},
 	{Name: "ltr569_p", Type: "proximity", Mode: "on-change", Default: true, Wakeup: true},

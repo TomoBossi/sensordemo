@@ -2,74 +2,135 @@ package main
 
 import (
 	"math"
+	"math/rand"
+	"path/filepath"
 	"testing"
 )
 
-// drive runs the detector on a field of the given strength for n frames.
-func drive(d *detector, ss *Streams, v *View, x float64, n int, t *float64) {
-	ss.Get("magnetic_field").push(clientEvent([]float64{x, 0, 0}))
+// A phone whose magnetometer reads Earth's field plus a big fixed offset,
+// like this one before calibrating.
+var (
+	testEarth = Vec3{0, 20, -15} // world frame, 25 uT
+	testBias  = Vec3{-18, 9, 30}
+)
+
+// poseRotation turns the phone so its axis a points up, spun yaw about
+// the vertical: world = R * phone.
+func poseRotation(a Vec3, yaw float64) Mat3 {
+	z := Vec3{0, 0, 1}
+	var r0 Mat3
+	switch c := a.Dot(z); {
+	case c > 0.999:
+		r0 = Identity()
+	case c < -0.999:
+		r0 = rotAxis(Vec3{1, 0, 0}, math.Pi)
+	default:
+		r0 = rotAxis(a.Cross(z).Norm(), math.Acos(c))
+	}
+	return rotAxis(z, yaw).Mul(r0)
+}
+
+type fakePhone struct {
+	ss  *Streams
+	d   *detector
+	v   *View
+	now float64
+	rng *rand.Rand
+}
+
+func newFakePhone(t *testing.T) *fakePhone {
+	t.Setenv("SENSORDEMO_MAGCAL", filepath.Join(t.TempDir(), "magcal.json"))
+	ss := &Streams{byKey: map[string]*Stream{"magnetic_field_uncalibrated": {}, "gravity": {}}}
+	var f Frame
+	f.Resize(60, 30)
+	return &fakePhone{ss: ss, d: &detector{source: "magnetic_field_uncalibrated", calib: &calibration{}},
+		v: f.View(0, 0, 60, 30), rng: rand.New(rand.NewSource(1))}
+}
+
+// hold keeps the phone in orientation R, with a field extra added, for n
+// frames, with a little sensor noise.
+func (p *fakePhone) hold(R Mat3, extra float64, n int) {
 	for i := 0; i < n; i++ {
-		*t += 1.0 / 30
-		d.Draw(v, ss, *t, 1.0/30)
+		e := R.T().Apply(testEarth)
+		e = e.Add(e.Norm().Scale(extra))
+		raw := e.Add(testBias).Add(Vec3{p.rng.NormFloat64(), p.rng.NormFloat64(), p.rng.NormFloat64()}.Scale(0.3))
+		up := R.T().Apply(Vec3{0, 0, 9.8})
+		p.ss.Get("magnetic_field_uncalibrated").push(clientEvent([]float64{raw[0], raw[1], raw[2], 0, 0, 0}))
+		p.ss.Get("gravity").push(clientEvent([]float64{up[0], up[1], up[2]}))
+		p.now += 1.0 / 30
+		p.d.Draw(p.v, p.ss, p.now, 1.0/30)
 	}
 }
 
-// Zeroing is a tare: zeroed next to steel (a strong field), a small change
-// still moves the needle; bigger readings widen the scale, and zeroing
-// again resets it.
-func TestDetectorTare(t *testing.T) {
-	ss := &Streams{byKey: map[string]*Stream{"magnetic_field": {}}}
-	d := &detector{}
-	d.startZero()
-	var f Frame
-	f.Resize(60, 30)
-	v := f.View(0, 0, 60, 30)
-	now := 0.0
-	drive(d, ss, v, 180, 30, &now) // zeroes at 180 uT
-	if !d.hasBase || math.Abs(d.base-180) > 0.01 {
-		t.Fatalf("zero %.2f, want 180", d.base)
-	}
-	small := d.scale
-	drive(d, ss, v, 181.5, 30, &now)
-	if d.needle < 0.2 {
-		t.Errorf("1.5 uT over a 180 uT zero: needle %.2f on a %.0f uT scale", d.needle, d.scale)
-	}
-	drive(d, ss, v, 260, 30, &now)
-	if d.scale <= small || d.needle > 1 {
-		t.Errorf("scale %.0f after a big reading (was %.0f)", d.scale, small)
-	}
-	drive(d, ss, v, d.base, 240, &now) // back at the zero for 8 s
-	if d.scale != small {
-		t.Errorf("scale %.0f after the big reading passed, want %.0f", d.scale, small)
-	}
-	d.Key('z')
-	drive(d, ss, v, 260, 30, &now)
-	if math.Abs(d.base-260) > 0.01 || d.scale != small || d.needle > 0.05 {
-		t.Errorf("after zeroing again: zero %.1f scale %.0f needle %.2f", d.base, d.scale, d.needle)
+func (p *fakePhone) calibrate() {
+	for i, pose := range calPoses {
+		p.hold(poseRotation(pose.axis, float64(i)), 0, 25)
 	}
 }
 
-// Zeroing waits for the phone to hold still, and a lasting offset fades.
-func TestDetectorStillZeroAndAutoZero(t *testing.T) {
-	ss := &Streams{byKey: map[string]*Stream{"magnetic_field": {}}}
-	d := &detector{}
-	d.startZero()
-	var f Frame
-	f.Resize(60, 30)
-	v := f.View(0, 0, 60, 30)
-	now := 0.0
-	for i := 0; i < 60; i++ { // waving around: never zeroes
-		drive(d, ss, v, 40+15*math.Sin(float64(i)), 1, &now)
+func TestDetectorCalibrates(t *testing.T) {
+	p := newFakePhone(t)
+	p.calibrate()
+	d := p.d
+	if !d.hasCal || d.calib != nil {
+		t.Fatalf("not calibrated: %q", d.calMsg)
 	}
-	if d.hasBase {
-		t.Fatalf("zeroed while moving: %.1f +- %.1f", d.base, d.noise)
+	if e := d.cal.Bias.Sub(testBias).Len(); e > 1 {
+		t.Errorf("offset %v, want %v (off by %.1f uT)", d.cal.Bias, testBias, e)
 	}
-	drive(d, ss, v, 40, 30, &now)
-	if !d.hasBase || math.Abs(d.base-40) > 0.01 {
-		t.Fatalf("zero %.2f after holding still at 40", d.base)
+	if math.Abs(d.cal.Radius-testEarth.Len()) > 1 {
+		t.Errorf("Earth's field %.1f uT, want %.1f", d.cal.Radius, testEarth.Len())
 	}
-	drive(d, ss, v, 70, 30*60, &now) // an offset that stays for a minute
-	if math.Abs(d.dev) > 1 {
-		t.Errorf("offset still reads %.1f uT after a minute", d.dev)
+	// Saved and reused.
+	d2 := &detector{}
+	ss, _ := OpenMock("magnetic_field_uncalibrated=1,2,3,0,0,0;gravity=0,0,9.8")
+	d2.Setup(ss)
+	if !d2.hasCal || d2.cal != d.cal {
+		t.Errorf("reloaded %+v, want %+v", d2.cal, d.cal)
+	}
+}
+
+// Calibrated, turning the phone every which way doesn't move the needle,
+// and metal does; the zero stays where it was set.
+func TestDetectorIgnoresTurning(t *testing.T) {
+	p := newFakePhone(t)
+	p.calibrate()
+	p.hold(Identity(), 0, 30) // zeroes
+	if !p.d.hasBase {
+		t.Fatal("no zero")
+	}
+	zero := p.d.base
+	for i := 0; i < 40; i++ {
+		a := Vec3{p.rng.NormFloat64(), p.rng.NormFloat64(), p.rng.NormFloat64()}.Norm()
+		p.hold(poseRotation(a, p.rng.Float64()*6), 0, 3)
+		if math.Abs(p.d.dev) > 1 {
+			t.Fatalf("turning alone reads %+.1f uT", p.d.dev)
+		}
+	}
+	p.hold(Identity(), 12, 30)
+	if p.d.dev < 8 {
+		t.Errorf("12 uT of metal reads %+.1f", p.d.dev)
+	}
+	p.hold(Identity(), 12, 30*60) // a minute over the metal
+	if p.d.base != zero || p.d.dev < 8 {
+		t.Errorf("zero moved to %.2f (was %.2f), reading %+.1f", p.d.base, zero, p.d.dev)
+	}
+}
+
+// Zeroing waits for the phone to hold still.
+func TestDetectorZeroWaitsForStillness(t *testing.T) {
+	p := newFakePhone(t)
+	p.calibrate()
+	p.d.hasBase = false
+	p.d.startZero()
+	for i := 0; i < 60; i++ {
+		p.hold(Identity(), 15*math.Sin(float64(i)), 1)
+	}
+	if p.d.hasBase {
+		t.Fatalf("zeroed while the field swung: %.1f +- %.1f", p.d.base, p.d.noise)
+	}
+	p.hold(Identity(), 0, 30)
+	if !p.d.hasBase || math.Abs(p.d.base-testEarth.Len()) > 0.5 {
+		t.Errorf("zero %.2f after holding still, want about %.1f", p.d.base, testEarth.Len())
 	}
 }
