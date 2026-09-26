@@ -12,7 +12,7 @@ func init() {
 	register(entry{
 		name: "dice",
 		desc: "shake the phone to roll 3D dice in a felt tray (optional: 3d20, 2d6+1d12; default 2d6)",
-		uses: []string{"linear_acceleration", "gravity"},
+		uses: []string{"linear_acceleration"},
 		new:  func(specs []string) Demo { return &dice{} },
 	})
 }
@@ -23,9 +23,8 @@ func init() {
 // ray cast per character with its numbers (pips on a d6) on its faces, a
 // shadow on the felt and darkened edges that read as rounded.
 //
-// The tray lies in the screen. Shaking the phone throws the dice (the tray
-// accelerates, the dice lag behind); tilting it from how you hold it lets
-// them slide. When they come to rest, the result shows.
+// The tray lies in the screen. A hard shake throws every die, each kicked
+// its own random way. When they come to rest, the result shows.
 //
 // World units are about a centimeter: x right, y up out of the screen, z
 // toward the bottom of the screen.
@@ -35,14 +34,14 @@ type dice struct {
 	w, h   int     // view the tray was laid out for
 	W, D   float64 // tray half width and half depth
 	rng    *rand.Rand
-	rest   [2]float64 // resting tilt (gravity on screen), which slowly follows the phone
-	calm   float64    // seconds all dice have been still
+	calm   float64 // seconds all dice have been still
 	result []int
 	rolled bool
 	throw  bool
 	since  float64 // time of the last result, for its entrance
 	err    string
 	light  Vec3    // toward the lamp
+	cool   float64 // until the next kick may land
 	fw, fd float64 // floor half extents the screen shows
 	eyeY   float64
 }
@@ -76,10 +75,9 @@ const (
 	diceG      = 320.0 // gravity, units/s^2: a third of real, for dice that seem their size
 	diceLid    = 7.0   // the glass lid's height
 	diceWall   = 2.2   // the tray walls' height
-	diceShake  = 40.0  // units/s^2 per m/s^2 of the phone's shake
-	diceTilt   = 32.0  // units/s^2 per m/s^2 of tilt
+	diceKick   = 7.0   // m/s^2 of shake that throws the dice
 	diceSteps  = 10    // physics substeps per frame
-	diceSlow   = 0.65  // the dice's time runs at this pace: livelier to watch
+	diceSlow   = 0.5   // the dice's time runs at half pace: livelier to watch
 	diceMaxDie = 12
 )
 
@@ -96,11 +94,6 @@ func (d *dice) Setup(ss *Streams) ([]*Gauge, error) {
 		return nil, err
 	}
 	d.kinds = kinds
-	if _, err := ss.Subscribe("gravity", 30); err != nil {
-		if _, err := ss.Subscribe("accelerometer", 30); err != nil {
-			return nil, err
-		}
-	}
 	d.light = diceLight
 	lin, err := ss.Subscribe("linear_acceleration", 60)
 	if err != nil {
@@ -313,7 +306,7 @@ func newDieKind(sides int) *dieKind {
 
 func (d *dice) Help() []string {
 	return []string{
-		"Shake the phone to throw the dice; tilt it to slide them around. When they stop, the total shows.",
+		"Shake the phone to throw the dice. When they stop, the total shows.",
 		"Choose the dice with an argument: sensordemo dice 3d20, sensordemo dice 1d6+1d10+1d20 (d4, d6, d8, d10, d12, d20; up to 12 dice). A d10 shows 0-9 and counts 0 as 10; a d4 reads the number at its top corner.",
 		"space  throw",
 	}
@@ -357,6 +350,24 @@ func (d *dice) layout(w, h int) {
 	}
 }
 
+// kick throws every die after a shake of move (m/s^2, tray axes): up and
+// off in a random direction, spinning, whatever it was doing.
+func (d *dice) kick(move Vec3) {
+	mag := move.Len()
+	for i := range d.dice {
+		dd := &d.dice[i]
+		a := d.rng.Float64() * 2 * math.Pi
+		speed := 10 + 1.2*mag
+		push := move.Scale(-1.2) // the tray lurches; the dice lag behind
+		dd.v = Vec3{speed * math.Cos(a), 0, speed * math.Sin(a)}.Add(Vec3{push[0], 0, push[2]})
+		dd.v[1] = 18 + 0.8*mag + 6*d.rng.Float64()
+		spin := 18 + 1.2*mag
+		dd.w = Vec3{d.rng.NormFloat64(), d.rng.NormFloat64(), d.rng.NormFloat64()}.Norm().Scale(spin)
+		dd.asleep, dd.sleep = false, 0
+	}
+	d.result, d.calm, d.rolled = nil, 0, true
+}
+
 // throwAll tosses every die from above with a random spin.
 func (d *dice) throwAll() {
 	for i := range d.dice {
@@ -380,40 +391,30 @@ func (d *dice) Draw(v *View, ss *Streams, t, dt float64) {
 	}
 	dt = math.Min(dt, 0.05)
 
-	// Forces from the phone: the shake throws, the tilt slides.
-	var acc Vec3
+	// A hard shake throws every die: each gets its own kick, the harder
+	// the shake the harder the kick, in a random direction with a random
+	// spin (plus the way the phone moved), at most every fifth of a
+	// second while the shaking lasts.
+	d.cool -= dt
 	if s := ss.Get("linear_acceleration"); s != nil {
 		if r := s.Read(); r.OK && len(r.V) >= 3 {
 			la := toScreen(ss, r.V)
 			// Screen (x right, y up, z out) to tray (x right, y out, z down).
-			acc = Vec3{la[0], la[2], -la[1]}.Scale(-diceShake)
+			move := Vec3{la[0], la[2], -la[1]}
+			if mag := move.Len(); mag > diceKick && d.cool <= 0 {
+				d.cool = 0.2
+				d.kick(move)
+			}
 		}
-	}
-	spec := "gravity"
-	if ss.Get(spec) == nil {
-		spec = "accelerometer"
-	}
-	if r := ss.Get(spec).Read(); r.OK && len(r.V) >= 3 {
-		a := toScreen(ss, r.V)
-		k := math.Min(1, dt/3) // the resting tilt follows the phone over seconds
-		d.rest[0] += (a[0] - d.rest[0]) * k
-		d.rest[1] += (a[1] - d.rest[1]) * k
-		acc = acc.Add(Vec3{-(a[0] - d.rest[0]), 0, a[1] - d.rest[1]}.Scale(diceTilt))
 	}
 	if d.throw {
 		d.throw = false
 		d.throwAll()
 		d.since = t
 	}
-	if acc.Len() > 400 { // a good shake wakes everything
-		for i := range d.dice {
-			d.dice[i].asleep = false
-		}
-		d.result = nil
-	}
 	h := dt * diceSlow / diceSteps
 	for s := 0; s < diceSteps; s++ {
-		d.physics(acc, h)
+		d.physics(h)
 	}
 
 	// Settled?
@@ -475,8 +476,8 @@ func (dd *die) value() int {
 
 // physics advances every die by h: gravity and the phone's pushes, then
 // contacts with the tray and each other.
-func (d *dice) physics(acc Vec3, h float64) {
-	g := Vec3{0, -diceG, 0}.Add(acc)
+func (d *dice) physics(h float64) {
+	g := Vec3{0, -diceG, 0}
 	for i := range d.dice {
 		dd := &d.dice[i]
 		if dd.asleep {
@@ -517,6 +518,9 @@ func (d *dice) physics(acc Vec3, h float64) {
 		}
 		var cs []contact
 		var push [6]float64
+		// Against a wall: within reach of one (contact itself flickers
+		// between substeps).
+		leaning := math.Abs(dd.p[0])+dd.k.radius > d.W-0.05 || math.Abs(dd.p[2])+dd.k.radius > d.D-0.05
 		for pi, pl := range planes {
 			if dd.p.Dot(pl.n)-pl.off > dd.k.radius { // nowhere near
 				continue
@@ -532,15 +536,15 @@ func (d *dice) physics(acc Vec3, h float64) {
 		touching := len(cs) > 0
 		for pass := 0; pass < 4; pass++ {
 			for _, c := range cs {
-				dd.impulse(c.r, c.n, c.e, 0.25)
+				dd.impulse(c.r, c.n, c.e, 0.45)
 			}
 		}
 		for pi, pl := range planes {
 			dd.p = dd.p.Add(pl.n.Scale(push[pi] * 0.8))
 		}
 		if touching { // rolling resistance and felt drag
-			dd.w = dd.w.Scale(math.Max(0, 1-1.0*h))
-			dd.v = dd.v.Scale(math.Max(0, 1-0.3*h))
+			dd.w = dd.w.Scale(math.Max(0, 1-1.8*h))
+			dd.v = dd.v.Scale(math.Max(0, 1-0.8*h))
 			// Lying flat on a face and slow, felt holds it (static
 			// friction): it stops instead of creeping.
 			if dd.v.Len() < 2 && dd.w.Len() < 2.5 && dd.flat() {
@@ -549,8 +553,10 @@ func (d *dice) physics(acc Vec3, h float64) {
 			}
 		}
 		// Rest: slow, touching and lying on a face for a moment, it sleeps
-		// until disturbed. (Not on an edge: it would tip over.)
-		if touching && dd.v.Len() < 1.2 && dd.w.Len() < 1.5 && dd.flat() {
+		// until disturbed. Out on the felt it must lie flat (on an edge it
+		// would tip over); against a wall it may rest cocked, as real dice
+		// do.
+		if touching && dd.v.Len() < 1.2 && dd.w.Len() < 1.5 && (dd.flat() || leaning) {
 			dd.sleep += h
 			if dd.sleep > 0.25 {
 				dd.asleep, dd.v, dd.w = true, Vec3{}, Vec3{}
