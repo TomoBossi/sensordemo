@@ -39,6 +39,54 @@ type kaleidoscope struct {
 	shown         float64 // the angle drawn, easing after turn
 	loose         float64 // the beads' angle, lagging
 	auto          bool
+
+	// Caches: per character of the screen's top left quarter, where it
+	// folds to in the wedge and its light; each layer's glass by grid
+	// cell; the last picture, reused while nothing turns.
+	w, h         int
+	geo          []kalGeo
+	gridA, gridB kalGrid
+	out          []artCell
+	drawnA       float64
+	drawnB       float64
+	valid        bool
+}
+
+type kalGeo struct{ fx, fy, light float64 }
+
+// kalGrid buckets a layer's pieces by the chamber's grid cells they reach.
+type kalGrid struct {
+	cells [][]int32
+}
+
+const (
+	kalGridN    = 24
+	kalGridSpan = 1.7 // the grid covers [-span, span] in both axes
+)
+
+func newKalGrid(layer []glass) kalGrid {
+	g := kalGrid{cells: make([][]int32, kalGridN*kalGridN)}
+	cell := 2 * kalGridSpan / kalGridN
+	for i, p := range layer {
+		r := p.r * 1.06
+		x0, x1 := int((p.x-r+kalGridSpan)/cell), int((p.x+r+kalGridSpan)/cell)
+		y0, y1 := int((p.y-r+kalGridSpan)/cell), int((p.y+r+kalGridSpan)/cell)
+		for y := max(0, y0); y <= min(kalGridN-1, y1); y++ {
+			for x := max(0, x0); x <= min(kalGridN-1, x1); x++ {
+				g.cells[y*kalGridN+x] = append(g.cells[y*kalGridN+x], int32(i))
+			}
+		}
+	}
+	return g
+}
+
+func (g *kalGrid) at(x, y float64) []int32 {
+	cell := 2 * kalGridSpan / kalGridN
+	cx, cy := int((x+kalGridSpan)/cell), int((y+kalGridSpan)/cell)
+	if cx < 0 || cy < 0 || cx >= kalGridN || cy >= kalGridN {
+		return nil
+	}
+	return g.cells[cy*kalGridN+cx]
 }
 
 type glass struct {
@@ -125,6 +173,8 @@ func (k *kaleidoscope) fill() {
 	for i := 0; i < 110; i++ {
 		k.beads = append(k.beads, piece(0.03, 0.08, true))
 	}
+	k.gridA, k.gridB = newKalGrid(k.shards), newKalGrid(k.beads)
+	k.valid = false
 }
 
 func (k *kaleidoscope) Draw(v *View, ss *Streams, t, dt float64) {
@@ -157,10 +207,10 @@ func (k *kaleidoscope) Draw(v *View, ss *Streams, t, dt float64) {
 // transmit is the color the glass of one layer passes at chamber point
 // (x, y) (white where there's none), and whether any glass is there. At a
 // piece's edge the leading is dark; just inside, the bevel is bright.
-func transmit(layer []glass, x, y float64) ([3]float64, bool) {
+func transmit(layer []glass, grid *kalGrid, x, y float64) ([3]float64, bool) {
 	out := [3]float64{1, 1, 1}
 	hit := false
-	for i := range layer {
+	for _, i := range grid.at(x, y) {
 		g := &layer[i]
 		dx, dy := x-g.x, y-g.y
 		if dx*dx+dy*dy > g.r*g.r*1.1 {
@@ -208,13 +258,31 @@ func polyEdge(pts [][2]float64, x, y float64) float64 {
 }
 
 func (k *kaleidoscope) render(v *View) {
-	w, h := float64(v.W), float64(v.H)
-	cx, cy := w/2, h/2
+	w, h := v.W, v.H
+	if w != k.w || h != k.h {
+		k.layout(w, h)
+	}
+	if !k.valid || k.drawnA != k.shown || k.drawnB != k.loose {
+		k.paint()
+	}
+	for i, c := range k.out {
+		if c.ch != ' ' {
+			v.Set(i%w, i/w, c.ch, c.col)
+		}
+	}
+}
+
+// layout works out, for the top left quarter of the screen (the rest
+// mirrors it), where each character folds to in the wedge and its light.
+func (k *kaleidoscope) layout(w, h int) {
+	k.w, k.h = w, h
+	k.out = make([]artCell, w*h)
+	qw, qh := (w+1)/2, (h+1)/2
+	k.geo = make([]kalGeo, qw*qh)
+	cx, cy := float64(w)/2, float64(h)/2
 	R := math.Hypot(cx, cy*2) * 0.72 // the chamber's radius on screen, columns
-	ca, sa := math.Cos(-k.shown), math.Sin(-k.shown)
-	cb, sb := math.Cos(-k.loose), math.Sin(-k.loose)
-	parallelRows(v.H, func(y int) {
-		for x := 0; x < v.W; x++ {
+	for y := 0; y < qh; y++ {
+		for x := 0; x < qw; x++ {
 			px, py := (float64(x)+0.5-cx)/R, (cy-float64(y)-0.5)*2/R
 			r := math.Hypot(px, py)
 			// Fold into the wedge between the mirrors.
@@ -222,11 +290,24 @@ func (k *kaleidoscope) render(v *View) {
 			if phi > kalSector {
 				phi = 2*kalSector - phi
 			}
-			fx, fy := r*math.Cos(phi), r*math.Sin(phi)
-			// The two layers, each turned by its own angle.
-			a, ha := transmit(k.shards, fx*ca-fy*sa, fx*sa+fy*ca)
-			b, hb := transmit(k.beads, fx*cb-fy*sb, fx*sb+fy*cb)
-			light := 1.15 * (1 - 0.55*smoothstep(0.1, 1.25, r)) // brightest in the middle
+			k.geo[y*qw+x] = kalGeo{r * math.Cos(phi), r * math.Sin(phi), 1.15 * (1 - 0.55*smoothstep(0.1, 1.25, r))}
+		}
+	}
+	k.valid = false
+}
+
+// paint renders the quarter at the current angles and mirrors it.
+func (k *kaleidoscope) paint() {
+	w, h := k.w, k.h
+	qw, qh := (w+1)/2, (h+1)/2
+	ca, sa := math.Cos(-k.shown), math.Sin(-k.shown)
+	cb, sb := math.Cos(-k.loose), math.Sin(-k.loose)
+	parallelRows(qh, func(y int) {
+		for x := 0; x < qw; x++ {
+			g := k.geo[y*qw+x]
+			fx, fy, light := g.fx, g.fy, g.light
+			a, ha := transmit(k.shards, &k.gridA, fx*ca-fy*sa, fx*sa+fy*ca)
+			b, hb := transmit(k.beads, &k.gridB, fx*cb-fy*sb, fx*sb+fy*cb)
 			var rgb [3]float64
 			if ha || hb {
 				for c := 0; c < 3; c++ {
@@ -239,13 +320,17 @@ func (k *kaleidoscope) render(v *View) {
 			}
 			lum := 0.3*rgb[0] + 0.55*rgb[1] + 0.15*rgb[2]
 			const ramp = " .:-=+*#%@"
-			ch := ramp[min(len(ramp)-1, int(math.Sqrt(clamp01(lum))*float64(len(ramp)-1)+0.5))]
-			if ch == ' ' {
-				continue
+			c := artCell{ch: ramp[min(len(ramp)-1, int(math.Sqrt(clamp01(lum))*float64(len(ramp)-1)+0.5))]}
+			if c.ch != ' ' {
+				c.col = rgb256(rgb)
 			}
-			v.Set(x, y, ch, rgb256(rgb))
+			// The mirror images of this character in the other quarters.
+			for _, p := range [4][2]int{{x, y}, {w - 1 - x, y}, {x, h - 1 - y}, {w - 1 - x, h - 1 - y}} {
+				k.out[p[1]*w+p[0]] = c
+			}
 		}
 	})
+	k.drawnA, k.drawnB, k.valid = k.shown, k.loose, true
 }
 
 // rgb256 is the terminal color nearest an RGB color (0..1): from the 6x6x6

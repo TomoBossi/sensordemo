@@ -53,3 +53,25 @@ func TestKaleidoscopeStillAndReversible(t *testing.T) {
 		}
 	}
 }
+
+func BenchmarkKaleidoscope(b *testing.B) {
+	for _, turning := range []bool{true, false} {
+		b.Run(map[bool]string{true: "turning", false: "still"}[turning], func(b *testing.B) {
+			ss := &Streams{byKey: map[string]*Stream{"gyroscope": {}}}
+			k := &kaleidoscope{seed: 3}
+			k.fill()
+			var f Frame
+			f.Resize(150, 90)
+			gz := 0.0
+			if turning {
+				gz = 0.8
+			}
+			ss.Get("gyroscope").push(clientEvent([]float64{0, 0, gz}))
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				f.Resize(150, 90)
+				k.Draw(f.View(0, 0, 150, 90), ss, float64(i)/30, 1.0/30)
+			}
+		})
+	}
+}
