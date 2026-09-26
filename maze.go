@@ -18,10 +18,10 @@ func init() {
 
 // maze is a tilt game on a small board seen from above. The ball moves in
 // continuous space with momentum, rolls (its stripes turn with it) and
-// bounces a little off walls. Some stretches have no walls at all: a
-// narrow bridge over the void, and rolling off it drops the ball and sends
-// it back to the start. Holes in dead ends do the same. Each solved board
-// gets harder: more and longer bridges, narrower ones.
+// bounces off walls. Some stretches have no walls at all: the passage is
+// as wide as anywhere else, but where a wall would stand there is a drop
+// into the void, and falling sends the ball back to the start. Holes in
+// dead ends do the same. Each solved board has more and longer bridges.
 //
 // The picture is a tiny 3D renderer, per character, without ray marching:
 // the view looks straight down in the room, so tilting the phone shows the
@@ -34,7 +34,6 @@ type maze struct {
 	level      int
 	cols, rows int
 	cells      []mcell
-	stripW     float64 // bridge width
 	walls      []box
 	near       [][]int // per cell: the walls that can touch it
 	holes      [][2]float64
@@ -73,7 +72,7 @@ const (
 	slabT   = 0.35 // board thickness, seen at bridge edges and in holes
 	holeR   = 0.31
 	goalR   = 0.33
-	tiltK   = 2.6 // cells/s^2 per m/s^2 of downhill gravity
+	tiltK   = 1.2 // cells/s^2 per m/s^2 of downhill gravity
 	maxAmp  = 0.7 // cap on the parallax shift per unit of height
 	parAmp  = 1.4 // parallax exaggeration: real would be 1
 	fallDur = 1.3
@@ -102,7 +101,7 @@ func (m *maze) Setup(ss *Streams) ([]*Gauge, error) {
 func (m *maze) Help() []string {
 	return []string{
 		"Tilt the phone to roll the ball into the glowing goal. It keeps its momentum, so brake by tilting back.",
-		"Bridges have no walls: roll off one, or into a hole, and the ball falls and goes back to the start. Every solved board adds bridges and makes them narrower.",
+		"Bridges are passages without walls: roll off one, or into a hole, and the ball falls and goes back to the start. Every solved board adds bridges.",
 		"n  new board    r  back to the start    b  vibrate on hard bumps (Termux bell)",
 	}
 }
@@ -200,7 +199,6 @@ func (m *maze) generate(w, h int) {
 			m.cells[c].bridge = true
 		}
 	}
-	m.stripW = math.Max(0.28, 0.46-0.03*float64(m.level-1))
 
 	center := func(i int) [2]float64 { return [2]float64{float64(i%m.cols) + 0.5, float64(i/m.cols) + 0.5} }
 	m.start, m.goal = center(0), center(far)
@@ -224,19 +222,19 @@ func (m *maze) generate(w, h int) {
 	m.reset()
 }
 
-// buildWalls turns the cells into wall boxes. Normal cells are rooms: every
-// closed side of theirs gets a wall. Bridge cells have none.
+// buildWalls turns the cells into wall boxes: a closed side gets a wall
+// unless it borders a bridge cell, where it is a drop instead.
 func (m *maze) buildWalls() {
 	m.walls = m.walls[:0]
-	normal := func(c, r int) bool {
-		return c >= 0 && r >= 0 && c < m.cols && r < m.rows && !m.cells[r*m.cols+c].bridge
+	normal := func(c, r int) bool { // outside the board counts as normal
+		return c < 0 || r < 0 || c >= m.cols || r >= m.rows || !m.cells[r*m.cols+c].bridge
 	}
 	const t = wallT / 2
 	wallAt := make(map[[2]int]bool) // grid corners that walls touch
 	for r := 0; r < m.rows; r++ {
 		for i := 0; i <= m.cols; i++ { // vertical edge left of cell (i, r)
 			closed := i == 0 || i == m.cols || !m.cells[r*m.cols+i-1].open[0]
-			if closed && (normal(i-1, r) || normal(i, r)) {
+			if closed && normal(i-1, r) && normal(i, r) {
 				m.walls = append(m.walls, box{float64(i) - t, float64(r), float64(i) + t, float64(r + 1)})
 				wallAt[[2]int{i, r}], wallAt[[2]int{i, r + 1}] = true, true
 			}
@@ -245,7 +243,7 @@ func (m *maze) buildWalls() {
 	for r := 0; r <= m.rows; r++ {
 		for i := 0; i < m.cols; i++ { // horizontal edge above cell (i, r)
 			closed := r == 0 || r == m.rows || !m.cells[(r-1)*m.cols+i].open[2]
-			if closed && (normal(i, r-1) || normal(i, r)) {
+			if closed && normal(i, r-1) && normal(i, r) {
 				m.walls = append(m.walls, box{float64(i), float64(r) - t, float64(i + 1), float64(r) + t})
 				wallAt[[2]int{i, r}], wallAt[[2]int{i + 1, r}] = true, true
 			}
@@ -280,8 +278,10 @@ func (m *maze) cellAt(x, y float64) int {
 	return r*m.cols + c
 }
 
-// floorAt reports whether the board is solid at (x, y): not the void around
-// a bridge, a hole or the goal.
+// floorAt reports whether the board is solid at (x, y). Every passage has
+// the same width: a cell's floor stops where a wall would stand on its
+// closed sides, wall or not. So without walls, the drop starts exactly
+// where the wall would have been. Holes and the goal are open too.
 func (m *maze) floorAt(x, y float64) bool {
 	if x < 0 || y < 0 || x >= float64(m.cols) || y >= float64(m.rows) {
 		return false
@@ -291,18 +291,21 @@ func (m *maze) floorAt(x, y float64) bool {
 	}
 	c := &m.cells[m.cellAt(x, y)]
 	fx, fy := x-math.Floor(x)-0.5, y-math.Floor(y)-0.5
-	if c.hole {
-		return math.Hypot(fx, fy) >= holeR
+	if c.hole && math.Hypot(fx, fy) < holeR {
+		return false
 	}
-	if !c.bridge {
+	h := 0.5 - wallT/2
+	inX, inY := math.Abs(fx) <= h, math.Abs(fy) <= h
+	switch {
+	case inX && inY:
 		return true
+	case !inX && !inY: // corners: under posts, or open to the void
+		return false
+	case !inX:
+		return fx > 0 && c.open[0] || fx < 0 && c.open[1]
+	default:
+		return fy > 0 && c.open[2] || fy < 0 && c.open[3]
 	}
-	h := m.stripW / 2
-	if math.Abs(fx) <= h && math.Abs(fy) <= h {
-		return true
-	}
-	return c.open[0] && fx > 0 && math.Abs(fy) <= h || c.open[1] && fx < 0 && math.Abs(fy) <= h ||
-		c.open[2] && fy > 0 && math.Abs(fx) <= h || c.open[3] && fy < 0 && math.Abs(fx) <= h
 }
 
 // step integrates the rolling ball for dt under a downhill acceleration
@@ -332,7 +335,7 @@ func (m *maze) step(ax, ay, dt, t float64) float64 {
 		if dec := (0.15 + 0.06*sp) * h; sp <= dec {
 			m.vx, m.vy = 0, 0
 		} else {
-			f := math.Min(sp-dec, 7) / sp
+			f := math.Min(sp-dec, 4.5) / sp
 			m.vx, m.vy = m.vx*f, m.vy*f
 		}
 		m.x += m.vx * h
