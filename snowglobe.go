@@ -37,9 +37,10 @@ type snowglobe struct {
 
 	// The view: the globe seen from where the eye is, which moves as the
 	// phone turns (head-coupled), and a little springy sway on shakes.
-	camD, camU, camR Vec3 // view direction, screen up, screen right
-	toWorld          Mat3 // globe (screen) frame to the room, for reflections
-	rot, rest        Mat3 // orientation now, and the resting one it drifts to
+	camD, camU, camR Vec3   // view direction, screen up, screen right
+	toWorld          Mat3   // globe (screen) frame to the room, for reflections
+	lights           []Vec3 // the room's lights, in the room
+	rot, rest        Mat3   // orientation now, and the resting one it drifts to
 	hasRot           bool
 	off, offV        [2]float64 // sway, globe radii
 	drawn            [5]float64 // view the picture was rendered for
@@ -440,7 +441,7 @@ func (g *snowglobe) project(p Vec3) (int, int, bool) {
 }
 
 var (
-	sgSoil    = []uint8{233, 234, 235, 58, 94}
+	sgSoil    = []uint8{60, 103, 110, 146, 152, 189, 195} // pale icy blue
 	sgLog     = []uint8{52, 94, 94, 130, 136, 173}
 	sgShingle = []uint8{52, 52, 88, 124, 131, 167}
 	sgRock    = []uint8{237, 239, 242, 245, 248}
@@ -583,9 +584,11 @@ func (g *snowglobe) render(x, y int, lamp Vec3) pixel {
 	return px
 }
 
-// Lights in the room, reflected by the glass: a ceiling lamp and a window.
-// Directions in the world frame of the rotation vector (z up).
-var sgRoomLights = []Vec3{{0, 0, 1}, Vec3{0.8, 0.3, 0.45}.Norm()}
+// Lights in the room, reflected by the glass: a lamp and a window, above
+// and behind the viewer, so their glints sit high on the glass, clear of
+// the village. Directions in the screen frame of the resting view; look
+// fixes them in the room.
+var sgRoomLights = []Vec3{Vec3{-0.35, 1, -0.2}.Norm(), Vec3{0.5, 0.8, -0.1}.Norm()}
 
 // glassOver adds the glass itself: a thin rim, and the room's lights
 // reflected in it, which slide over the sphere as the phone turns. at is
@@ -604,16 +607,16 @@ func (g *snowglobe) glassOver(px *pixel, at Vec3, r2 float64, glass, empty bool)
 	D := g.camD
 	r := g.toWorld.Apply(D.Sub(n.Scale(2 * D.Dot(n))))
 	best := 0.0
-	for _, l := range sgRoomLights {
+	for _, l := range g.lights {
 		best = math.Max(best, r.Dot(l))
 	}
-	switch {
+	switch { // grayish, so glints don't pass for snow
 	case best > 0.995:
-		px.ov, px.ovCol = '@', 231
+		px.ov, px.ovCol = '@', 250
 	case best > 0.985:
-		px.ov, px.ovCol = '*', 255
+		px.ov, px.ovCol = '*', 246
 	case best > 0.93 && empty:
-		px.ov, px.ovCol = '.', 152
+		px.ov, px.ovCol = '.', 242
 	}
 }
 
@@ -818,19 +821,31 @@ func (g *snowglobe) look(ss *Streams, dt float64) {
 			}
 		}
 	}
-	// Exaggerate and limit the angle away from straight on.
+	restToWorld := g.toWorld
+	if g.hasRot {
+		restToWorld = g.rest.Mul(sf)
+	}
+	g.lights = g.lights[:0]
+	for _, l := range sgRoomLights {
+		g.lights = append(g.lights, restToWorld.Apply(l))
+	}
+	// Exaggerate the angle away from straight on, easing into a limit of
+	// 35 degrees instead of stopping there.
 	if lxy := math.Hypot(eye[0], eye[1]); lxy > 1e-6 {
-		a := math.Min(1.3*math.Atan2(lxy, eye[2]), 35*math.Pi/180)
+		const lim = 35 * math.Pi / 180
+		a := lim * math.Tanh(1.3*math.Atan2(lxy, eye[2])/lim)
 		eye = Vec3{eye[0] / lxy * math.Sin(a), eye[1] / lxy * math.Sin(a), math.Cos(a)}
 	}
 	// Then look down on the globe a little, as from the default seat.
 	c, s := math.Cos(sgElev), math.Sin(sgElev)
 	E := Vec3{eye[0], eye[1]*c + eye[2]*s, -eye[1]*s + eye[2]*c}
-	// Never from below the village's floor: always a little from above.
-	if lo := math.Sin(8 * math.Pi / 180); E[1] < lo {
-		k := math.Sqrt((1 - lo*lo) / math.Max(E[0]*E[0]+E[2]*E[2], 1e-9))
-		E = Vec3{E[0] * k, lo, E[2] * k}
-	}
+	// Never from below the village's floor: the elevation eases toward 8
+	// degrees (a smooth maximum) instead of stopping there.
+	const lo, soft = 8 * math.Pi / 180, 0.1
+	el := math.Asin(math.Max(-1, math.Min(1, E[1])))
+	el = lo + soft*math.Log1p(math.Exp((el-lo)/soft))
+	k := math.Cos(el) / math.Max(math.Hypot(E[0], E[2]), 1e-9)
+	E = Vec3{E[0] * k, math.Sin(el), E[2] * k}
 	g.camD = E.Scale(-1)
 	g.camR = g.camD.Cross(Vec3{0, 1, 0}).Norm()
 	g.camU = g.camR.Cross(g.camD)
