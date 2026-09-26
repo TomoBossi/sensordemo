@@ -531,7 +531,10 @@ func (g *snowglobe) render(x, y int, lamp Vec3) pixel {
 	switch m {
 	case mGround:
 		wv := hash2(int(p[0]*60), int(p[2]*60), 1)
-		px.ch, px.col = sgShade(sgSoil, light*0.8, ".,:;")
+		// Darker with depth: the surface is pale, and the cut face seen
+		// through the glass fades down into the dark as the view drops.
+		depth := 0.25 + 0.75*smoothstep(-0.95, -0.42, p[1])
+		px.ch, px.col = sgShade(sgSoil, (0.25+0.75*light)*depth, ".,:;")
 		if wv%7 == 0 {
 			px.ch = '\''
 		}
