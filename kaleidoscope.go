@@ -207,8 +207,12 @@ func (k *kaleidoscope) Draw(v *View, ss *Streams, t, dt float64) {
 // transmit is the color the glass of one layer passes at chamber point
 // (x, y) (white where there's none), and whether any glass is there. At a
 // piece's edge the leading is dark; just inside, the bevel is bright.
-func transmit(layer []glass, grid *kalGrid, x, y float64) ([3]float64, bool) {
+// It also returns a brightness factor for the character's density: the
+// bevel and the glass's texture show there, not in the color, so a patch
+// of glass is one color and the terminal gets few color changes.
+func transmit(layer []glass, grid *kalGrid, x, y float64) ([3]float64, float64, bool) {
 	out := [3]float64{1, 1, 1}
+	bright := 1.0
 	hit := false
 	for _, i := range grid.at(x, y) {
 		g := &layer[i]
@@ -226,20 +230,20 @@ func transmit(layer []glass, grid *kalGrid, x, y float64) ([3]float64, bool) {
 			continue
 		}
 		hit = true
-		k := 1.0
 		switch {
 		case edge < 0.012:
-			k = 0.08 // leading
+			out = [3]float64{0.03, 0.03, 0.03} // leading
+			return out, 0.2, true
 		case edge < 0.04:
-			k = 1.35 // the bevel catches the light
+			bright *= 1.4 // the bevel catches the light
 		default:
-			k = 0.85 + 0.15*math.Sin(dx*40+dy*23) // a faint texture
+			bright *= 0.85 + 0.15*math.Sin(dx*40+dy*23) // a faint texture
 		}
 		for c := 0; c < 3; c++ {
-			out[c] *= g.rgb[c] * k
+			out[c] *= g.rgb[c]
 		}
 	}
-	return out, hit
+	return out, bright, hit
 }
 
 // polyEdge is how far (x, y) lies inside a convex polygon (< 0 outside).
@@ -306,23 +310,26 @@ func (k *kaleidoscope) paint() {
 		for x := 0; x < qw; x++ {
 			g := k.geo[y*qw+x]
 			fx, fy, light := g.fx, g.fy, g.light
-			a, ha := transmit(k.shards, &k.gridA, fx*ca-fy*sa, fx*sa+fy*ca)
-			b, hb := transmit(k.beads, &k.gridB, fx*cb-fy*sb, fx*sb+fy*cb)
-			var rgb [3]float64
-			if ha || hb {
-				for c := 0; c < 3; c++ {
-					rgb[c] = a[c] * b[c] * light
-				}
-			} else {
-				// No glass: frosted, faintly violet, with a grain.
-				fr := 0.1 + 0.05*math.Sin(fx*57+fy*31)*math.Sin(fx*23-fy*41)
-				rgb = [3]float64{fr * 0.8 * light, fr * 0.55 * light, fr * 1.3 * light}
-			}
-			lum := 0.3*rgb[0] + 0.55*rgb[1] + 0.15*rgb[2]
+			a, ba, ha := transmit(k.shards, &k.gridA, fx*ca-fy*sa, fx*sa+fy*ca)
+			b, bb, hb := transmit(k.beads, &k.gridB, fx*cb-fy*sb, fx*sb+fy*cb)
+			// The color takes the light in three steps from the middle out,
+			// so it changes only at a region's edge; the fine shading goes
+			// into the character's density.
+			band := math.Round(light*3) / 3
+			var c artCell
 			const ramp = " .:-=+*#%@"
-			c := artCell{ch: ramp[min(len(ramp)-1, int(math.Sqrt(clamp01(lum))*float64(len(ramp)-1)+0.5))]}
-			if c.ch != ' ' {
+			if ha || hb {
+				var rgb [3]float64
+				for i := 0; i < 3; i++ {
+					rgb[i] = a[i] * b[i] * band
+				}
+				lum := (0.3*rgb[0] + 0.55*rgb[1] + 0.15*rgb[2]) * ba * bb * light / band
+				c.ch = ramp[min(len(ramp)-1, int(math.Sqrt(clamp01(lum))*float64(len(ramp)-1)+0.5))]
 				c.col = rgb256(rgb)
+			} else if math.Sin(fx*57+fy*31)*math.Sin(fx*23-fy*41) > 0.55 {
+				c = artCell{ch: '.', col: 60} // frosted glass: a sparse grain, one color
+			} else {
+				c.ch = ' '
 			}
 			// The mirror images of this character in the other quarters.
 			for _, p := range [4][2]int{{x, y}, {w - 1 - x, y}, {x, h - 1 - y}, {w - 1 - x, h - 1 - y}} {
