@@ -52,6 +52,9 @@ type maze struct {
 	pending    byte // key to act on at the next frame ('n', 'r')
 	up         Vec3 // smoothed room up, board frame
 	hasUp      bool
+	beep       bool
+	lastBeep   float64
+	out        interface{ Write([]byte) (int, error) }
 }
 
 type box struct{ x0, y0, x1, y1 float64 }
@@ -98,7 +101,8 @@ func (m *maze) Help() []string {
 	return []string{
 		"Tilt the phone to roll the ball into the glowing goal. It keeps its momentum, so brake by tilting back.",
 		"Bridges are passages without walls: roll off one, or into a hole, and the ball falls and goes back to the start. Every solved board adds bridges.",
-		"n  new board    r  back to the start",
+		"n  new board    r  back to the start    b  vibrate on hard bumps (Termux bell)",
+		"b rings the terminal bell, which Termux turns into a short vibration; it needs vibration on in Android's Sound & vibration settings.",
 	}
 }
 
@@ -106,8 +110,13 @@ func (m *maze) Key(k byte) {
 	switch k {
 	case 'n', 'r':
 		m.pending = k
+	case 'b':
+		m.beep = !m.beep
 	}
 }
+
+// SetOut gives the demo the terminal, for the bell.
+func (m *maze) SetOut(w interface{ Write([]byte) (int, error) }) { m.out = w }
 
 // generate makes a board that fits a w x h view: a perfect maze (randomized
 // depth-first search), the goal in the cell farthest from the start, runs of
@@ -474,7 +483,10 @@ func (m *maze) Draw(v *View, ss *Streams, t, dt float64) {
 
 	switch m.state {
 	case rolling:
-		m.step(-a[0], a[1], dt, t)
+		if imp := m.step(-a[0], a[1], dt, t); imp > 1.5 && m.beep && m.out != nil && t-m.lastBeep > 0.15 {
+			m.out.Write([]byte("\a"))
+			m.lastBeep = t
+		}
 	case falling:
 		m.drop(dt)
 		if t-m.since > fallDur {
