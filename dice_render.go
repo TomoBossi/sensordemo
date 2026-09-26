@@ -265,8 +265,10 @@ func (d *dice) caption(v *View, area int, t float64) {
 		names = append(names, fmt.Sprintf("%dd%d", count[s], s))
 	}
 	spec := strings.Join(names, "+")
-	line := spec + ": shake to roll"
-	col := uint8(244)
+	// Until the dice rest and are read, they're rolling (they're thrown
+	// as the demo opens, and a cocked die still has a top face, so there
+	// is always a result to wait for).
+	line, col := spec+": rolling...", uint8(244)
 	if d.result != nil {
 		sum := 0
 		var parts []string
@@ -279,8 +281,6 @@ func (d *dice) caption(v *View, area int, t float64) {
 			line = fmt.Sprintf("%s: %s = %d", spec, strings.Join(parts, " + "), sum)
 		}
 		col = 220
-	} else if d.calm == 0 {
-		line = spec + ": rolling..."
 	}
 	v.Text(max(0, (v.W-len(line))/2), area, line, col)
 }
