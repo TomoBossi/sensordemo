@@ -38,6 +38,7 @@ func TestPreview(t *testing.T) {
 	var f Frame
 	f.Resize(w, h)
 	for i := 0; i < frames; i++ {
+		f.Resize(w, h) // clears, as each tick does
 		d.Draw(f.View(0, 0, w, h), ss, float64(i)/30, 1.0/30)
 	}
 	const cw, ch = 8, 16

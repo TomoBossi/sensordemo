@@ -508,7 +508,7 @@ func (g *hourglass) Draw(v *View, ss *Streams, t, dt float64) {
 	}
 	g.drawSand(v)
 	for i, a := range g.art { // the frame in front of the glass hides the sand
-		if a.front && g.counts[i] == 0 {
+		if a.front {
 			v.Set(i%g.w, i/g.w, a.ch, a.col)
 		}
 	}
