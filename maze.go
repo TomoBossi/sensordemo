@@ -69,7 +69,6 @@ const (
 	wallT   = 0.2  // wall thickness
 	wallH   = 0.3  // wall height
 	ballR   = 0.27 // ball radius
-	slabT   = 0.35 // board thickness, seen at bridge edges and in holes
 	holeR   = 0.31
 	goalR   = 0.33
 	tiltK   = 1.2 // cells/s^2 per m/s^2 of downhill gravity
@@ -651,39 +650,20 @@ func (m *maze) shade(qx, qy float64, vw *view, t float64) (byte, uint8) {
 		}
 		return c, mzPick(mzWood, i)
 	}
-	// Void: the ball below the board, the board's cut edges, then the deep.
-	ez, en, eok := m.edgeHit(qx, qy, vw)
-	if bok && (!eok || bz > ez) {
-		c, col := m.ballColor(bn, vw)
-		return c, col
+	// Void: the ball falling below the board, then darkness. Narrow drops
+	// (where a wall would stand) stay solid black to read clearly; the
+	// round holes, the goal and the space around the board show the deep
+	// starfield.
+	if bok {
+		return m.ballColor(bn, vw)
 	}
-	if eok {
-		i := 0.25 + 0.75*math.Max(0, en.Dot(L))
-		if math.Hypot(qx-ez*vw.dx-m.goal[0], qy-ez*vw.dy-m.goal[1]) < goalR+0.05 {
-			return '|', mzPick(mzGoal, i*0.7)
-		}
-		return ':', mzPick(mzEdge, i)
+	inBoard := qx >= 0 && qy >= 0 && qx < float64(m.cols) && qy < float64(m.rows)
+	open := !inBoard || math.Hypot(qx-m.goal[0], qy-m.goal[1]) < goalR
+	for _, c := range m.holes {
+		open = open || math.Hypot(qx-c[0], qy-c[1]) < holeR
 	}
-	for gi, c := range append(m.holes, m.goal) {
-		r := holeR
-		goal := gi == len(m.holes)
-		if goal {
-			r = goalR
-		}
-		if d := math.Hypot(qx-c[0], qy-c[1]); d < r {
-			// Seen from straight above, the inner wall shows all around;
-			// tilted, edgeHit shows the far side and the near side hides.
-			fade := 1 - math.Hypot(vw.dx, vw.dy)/0.25
-			if d < r*0.55 || fade <= 0 {
-				return ' ', 0
-			}
-			n := Vec3{(c[0] - qx) / d, (c[1] - qy) / d, 0}
-			i := (0.2 + 0.7*math.Max(0, n.Dot(L))) * fade
-			if goal {
-				return ':', mzPick(mzGoal, i*0.7)
-			}
-			return ':', mzPick(mzEdge, i)
-		}
+	if !open {
+		return ' ', 0
 	}
 	for k, d := range []float64{2, 5} {
 		sx, sy := qx+d*vw.dx, qy+d*vw.dy
@@ -767,36 +747,6 @@ func (m *maze) ballShadow(x, y, z float64, L Vec3) bool {
 	b := o.Dot(L)
 	c := o.Dot(o) - ballR*ballR
 	return b < 0 && b*b-c > 0
-}
-
-// edgeHit finds where the view ray, going below the board surface through
-// the void, meets the board's cut side.
-func (m *maze) edgeHit(qx, qy float64, vw *view) (float64, Vec3, bool) {
-	if vw.dx == 0 && vw.dy == 0 {
-		return 0, Vec3{}, false
-	}
-	const steps = 8
-	for k := 1; k <= steps; k++ {
-		z := -slabT * float64(k) / steps
-		px, py := qx-z*vw.dx, qy-z*vw.dy
-		if !m.floorAt(px, py) {
-			continue
-		}
-		// The face toward the viewer: a circle's inside in holes and the
-		// goal, otherwise whichever axis side is open toward the eye.
-		for _, h := range append(m.holes, m.goal) {
-			if dh := math.Hypot(px-h[0], py-h[1]); dh < goalR+0.05 {
-				return z, Vec3{(h[0] - px) / dh, (h[1] - py) / dh, 0}, true
-			}
-		}
-		sx, sy := math.Copysign(0.03, vw.dx), math.Copysign(0.03, vw.dy)
-		openX, openY := !m.floorAt(px-sx, py), !m.floorAt(px, py-sy)
-		if openX && (!openY || math.Abs(vw.dx) > math.Abs(vw.dy)) {
-			return z, Vec3{-math.Copysign(1, vw.dx), 0, 0}, true
-		}
-		return z, Vec3{0, -math.Copysign(1, vw.dy), 0}, true
-	}
-	return 0, Vec3{}, false
 }
 
 // ballColor shades the ball: diffuse and a sharp highlight from the lamp, a
