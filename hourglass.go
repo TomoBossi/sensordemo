@@ -44,8 +44,10 @@ type hourglass struct {
 	halfH      float64 // glass half height, cells
 	wmax, neck float64 // widest and neck half widths, cells
 	halfW      []float64
-	cell       []int32 // grain index, or empty / wall
-	gx, gy     []int16 // grain positions
+	baseRows   int       // characters each ornate base takes
+	art        []artCell // the frame and glass, rendered once
+	cell       []int32   // grain index, or empty / wall
+	gx, gy     []int16   // grain positions
 	tone       []uint8
 	awake      []bool
 	active     []int32
@@ -112,14 +114,15 @@ func (g *hourglass) layout(w, h int) {
 	g.w, g.h = w, h
 	g.fw, g.fh = w*hgSX, h*hgSY
 	g.cxF = float64(w/2*hgSX) + hgSX/2.0 // the middle of a character column
-	g.top, g.bot = 2*hgSY, (h-2)*hgSY-1  // inside the wooden plates
+	g.baseRows = max(3, min(9, h/6))
+	g.top, g.bot = g.baseRows*hgSY, (h-g.baseRows)*hgSY-1 // between the bases
 	g.nr = (g.top + g.bot) / 2
 	g.halfH = float64(g.bot-g.top) / 2
 	g.neck = 1.01 // two cells: one character, widened below if needed
 	// Sand here holds a slope of up to 45 degrees, so the walls must be
 	// clearly steeper for none to stay behind: at least 60 degrees. The
 	// profile's slope peaks at 1.25, next to the neck.
-	g.wmax = math.Min(float64(g.fw)/2-5*hgSX, g.halfH*math.Tan(math.Pi/6)/1.25+g.neck)
+	g.wmax = math.Min(g.widest(), g.halfH*math.Tan(math.Pi/6)/1.25+g.neck)
 	g.shape()
 	// A neck wide enough to carry the flow the timer needs: each of its
 	// cells passes at most a grain per move, and some slack for the sand
@@ -132,7 +135,7 @@ func (g *hourglass) layout(w, h int) {
 	perMove := float64(vol) * 0.6 / g.dur.Seconds() / (30 * hgSteps)
 	if cells := math.Ceil(perMove * 4 / 2); cells > 1 {
 		g.neck = cells + 0.01
-		g.wmax = math.Min(float64(g.fw)/2-5*hgSX, g.halfH*math.Tan(math.Pi/6)/1.25+g.neck)
+		g.wmax = math.Min(g.widest(), g.halfH*math.Tan(math.Pi/6)/1.25+g.neck)
 		g.shape()
 	}
 	g.cell = make([]int32, g.fw*g.fh)
@@ -146,6 +149,29 @@ func (g *hourglass) layout(w, h int) {
 		}
 	}
 	g.fill(g.grav[1] >= 0)
+	g.renderArt()
+}
+
+// widest is the glass's largest half width that leaves room for the posts
+// beside it and the bases around them.
+func (g *hourglass) widest() float64 {
+	return 0.76*(float64(g.fw)/2-1) - 5
+}
+
+// baseR is the bases' radius: the posts stand at 0.76 of it, clear of the
+// glass.
+func (g *hourglass) baseR() float64 { return (g.wmax + 5) / 0.76 }
+
+// profile is the glass's inner half width at cell row y (continuous).
+func (g *hourglass) profile(y float64) float64 {
+	s := math.Abs(y-float64(g.nr)-0.5) / g.halfH
+	f := 1 - math.Pow(1-math.Min(s, 1), 1.25)
+	hw := g.neck + (g.wmax-g.neck)*f
+	if s > 0.88 { // rounded shoulders
+		k := (math.Min(s, 1) - 0.88) / 0.12
+		hw *= math.Sqrt(math.Max(0, 1-0.45*k*k))
+	}
+	return hw
 }
 
 // shape computes the glass's half width per row from the neck and the
@@ -153,14 +179,7 @@ func (g *hourglass) layout(w, h int) {
 func (g *hourglass) shape() {
 	g.halfW = make([]float64, g.fh)
 	for y := g.top; y <= g.bot; y++ {
-		s := math.Abs(float64(y)+0.5-float64(g.nr)-0.5) / g.halfH
-		f := 1 - math.Pow(1-math.Min(s, 1), 1.25)
-		hw := g.neck + (g.wmax-g.neck)*f
-		if s > 0.88 { // rounded shoulders
-			k := (s - 0.88) / 0.12
-			hw *= math.Sqrt(math.Max(0, 1-0.45*k*k))
-		}
-		g.halfW[y] = hw
+		g.halfW[y] = g.profile(float64(y) + 0.5)
 	}
 }
 
@@ -476,8 +495,11 @@ func (g *hourglass) Draw(v *View, ss *Streams, t, dt float64) {
 		g.done = 0
 	}
 
-	g.drawFrame(v)
-	g.drawGlass(v)
+	for i, a := range g.art {
+		if a.ch != ' ' {
+			v.Set(i%g.w, i/g.w, a.ch, a.col)
+		}
+	}
 	g.drawSand(v)
 
 	left := time.Duration(float64(g.dur) * float64(src) / math.Max(1, float64(g.total))).Round(time.Second)
@@ -545,86 +567,6 @@ func (g *hourglass) drawSand(v *View) {
 				ch = '%'
 			}
 			v.Set(cx, cy, ch, hgSand[tone/n])
-		}
-	}
-}
-
-// drawGlass draws the glass as two lines (its thickness) following the
-// curve, and a streak of reflected light in each bulb.
-func (g *hourglass) drawGlass(v *View) {
-	col := func(fx float64) int { return int(math.Floor(fx / hgSX)) }
-	for cy := g.top / hgSY; cy <= g.bot/hgSY; cy++ {
-		y0, y1 := cy*hgSY, cy*hgSY+hgSY-1
-		w0, w1 := g.halfW[y0], g.halfW[y1]
-		for side := -1; side <= 1; side += 2 {
-			// The column just outside the sand at the row's top and bottom.
-			sd := float64(side)
-			a := col(g.cxF + sd*(w0+0.5))
-			b := col(g.cxF + sd*(w1+0.5))
-			ch := byte('|')
-			switch {
-			case b < a:
-				ch = '/'
-			case b > a:
-				ch = '\\'
-			}
-			lo, hi := min(a, b), max(a, b)
-			for x := lo; x <= hi; x++ {
-				v.Set(x, cy, ch, hgGlass)
-				v.Set(x+side, cy, ch, hgRim)
-			}
-		}
-		// Reflections: a streak down the left side of each bulb.
-		// A short vertical shine where the bulb is widest and its wall
-		// nearly upright, so it reads as glass, not as falling sand.
-		s := math.Abs(float64(y0)-float64(g.nr)) / g.halfH
-		if s > 0.6 && s < 0.84 {
-			x := col(g.cxF - g.halfW[y0] + 2.5*hgSX)
-			v.Set(x, cy, '|', hgShine)
-		}
-	}
-	// The neck's collar.
-	ny := g.nr / hgSY
-	cx := int(g.cxF / hgSX)
-	v.Set(cx-1, ny, ')', hgGlass)
-	v.Set(cx+1, ny, '(', hgGlass)
-}
-
-// drawFrame draws the wooden plates and the turned posts.
-func (g *hourglass) drawFrame(v *View) {
-	half := int(g.wmax/hgSX) + 5
-	cx := int(g.cxF / hgSX) // the glass's axis column
-	l, r := cx-half, cx+half
-	topY, botY := g.top/hgSY-2, g.bot/hgSY+1
-	for x := l; x <= r; x++ {
-		v.Set(x, topY, '_', hgWood[3])
-		v.Set(x, topY+1, '=', hgWood[4])
-		v.Set(x, botY, '=', hgWood[4])
-		v.Set(x, botY+1, '"', hgWood[2])
-	}
-	v.Set(l-1, topY+1, '(', hgWood[1])
-	v.Set(r+1, topY+1, ')', hgWood[1])
-	v.Set(l-1, botY, '(', hgWood[1])
-	v.Set(r+1, botY, ')', hgWood[1])
-	for _, px := range []int{l + 1, r - 3} { // symmetric about cx
-		n := botY - topY - 2
-		for k := 0; k < n; k++ {
-			y := topY + 2 + k
-			t := (float64(k) + 0.5) / float64(n)
-			seg := " | "
-			switch {
-			case k == 0 || k == n-1:
-				seg = "(O)"
-			case math.Abs(t-0.5) < 0.5/float64(n)+0.01:
-				seg = ")O("
-			case math.Abs(t-0.25) < 0.5/float64(n) || math.Abs(t-0.75) < 0.5/float64(n):
-				seg = "{=}"
-			}
-			for i := 0; i < 3; i++ {
-				if seg[i] != ' ' {
-					v.Set(px+i, y, seg[i], []uint8{hgWood[1], hgWood[5], hgWood[2]}[i])
-				}
-			}
 		}
 	}
 }
