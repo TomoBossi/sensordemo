@@ -8,77 +8,73 @@ import (
 func init() {
 	register(entry{
 		name: "kaleidoscope",
-		desc: "turn the phone like a kaleidoscope: colored glass tumbles in its chamber between three mirrors",
-		uses: []string{"gravity", "linear_acceleration"},
+		desc: "turn the phone like a kaleidoscope: glass in its chamber, twelve-fold between two mirrors",
+		uses: []string{"gyroscope"},
 		new:  func(specs []string) Demo { return &kaleidoscope{} },
 	})
 }
 
-// kaleidoscope is a three-mirror kaleidoscope. Pieces of colored glass
-// (shards, diamonds, beads) lie in a round chamber and tumble under the
-// phone's real gravity, bumping each other and the chamber's wall. The
-// mirrors form an equilateral triangle: every point of the screen is
-// folded into it by reflecting across its sides, so the triangle's view of
-// the chamber tiles the screen with mirror symmetry. Turning the phone as
-// you would turn a kaleidoscope makes the glass tumble and the pattern
-// flow; a shake jolts it.
+// kaleidoscope is a two-mirror kaleidoscope: mirrors at 30 degrees make
+// twelve images of a wedge of the object chamber, a mandala centered on
+// the screen. Every character is folded into that wedge (mirror lines lie
+// along the axes, so it is exactly symmetric left to right and top to
+// bottom).
 //
-// The chamber is lit from behind, like glass held to the light: pieces
-// glow in their colors with dark edges (like lead in stained glass), and
-// where two overlap the color deepens.
+// The chamber holds two layers of glass: shards fixed in it, and loose
+// beads that lag behind when it turns and settle after. Turning the phone
+// about its screen (the gyroscope) turns the chamber against the mirrors,
+// as in a real kaleidoscope; held still, nothing moves, and turning back
+// brings the pattern back.
+//
+// The light is computed in color: the glass filters a light behind it, so
+// where pieces overlap their colors multiply into deeper hues, and where
+// there is no glass the view is dark. Pieces have dark leading at their
+// edges, a bright beveled rim inside it, and a faint texture; the light
+// is brightest at the center. The color becomes the nearest of the
+// terminal's 256, and the character's density follows the brightness.
 type kaleidoscope struct {
-	pieces []shard
-	rng    *rand.Rand
-	auto   bool    // turn by itself
-	turn   float64 // the auto turn's angle
-	kick   float64
-	down   [2]float64 // smoothed gravity in the screen plane, unit-ish
+	shards, beads []glass
+	seed          int64
+	turn          float64 // the chamber's angle, from the phone's turning
+	shown         float64 // the angle drawn, easing after turn
+	loose         float64 // the beads' angle, lagging
+	auto          bool
 }
 
-type shard struct {
-	p, v  [2]float64
-	a, w  float64      // angle and spin
-	r     float64      // radius, for collisions
-	shape [][2]float64 // corners around the center; nil = a round bead
-	color int
+type glass struct {
+	x, y  float64      // center, in the chamber (radius 1)
+	r     float64      // extent
+	shape [][2]float64 // corners around the center; nil = round
+	rgb   [3]float64   // transmitted color
 }
 
-const (
-	kalR     = 10.0 // chamber radius
-	kalG     = 28.0 // gravity in the chamber, units/s^2: glass in oil, slow
-	kalShake = 5.0  // per m/s^2 of shake
-)
-
-var kalColors = [][]uint8{
-	{52, 88, 124, 160, 196, 203, 210},  // ruby
-	{17, 18, 19, 20, 27, 33, 75},       // sapphire
-	{22, 28, 34, 40, 41, 83, 120},      // emerald
-	{53, 54, 90, 91, 128, 135, 177},    // amethyst
-	{94, 130, 166, 172, 208, 214, 222}, // amber
-	{58, 100, 142, 184, 220, 226, 229}, // citrine
-	{23, 30, 37, 44, 45, 87, 123},      // turquoise
-	{89, 125, 161, 162, 205, 211, 218}, // rose
+var jewels = [][3]float64{
+	{0.95, 0.12, 0.18}, // ruby
+	{0.15, 0.35, 1.0},  // sapphire
+	{0.1, 0.85, 0.4},   // emerald
+	{1.0, 0.62, 0.1},   // amber
+	{0.65, 0.25, 0.95}, // amethyst
+	{0.1, 0.85, 0.85},  // turquoise
+	{1.0, 0.92, 0.25},  // citrine
+	{1.0, 0.4, 0.65},   // rose
 }
 
-var kalLight = []uint8{240, 244, 247, 250, 252, 254, 255, 231}
+const kalSector = math.Pi / 6 // the angle between the mirrors
 
 func (k *kaleidoscope) Setup(ss *Streams) ([]*Gauge, error) {
-	k.rng = rand.New(rand.NewSource(int64(rand.Uint32())))
-	st, err := ss.Subscribe("gravity", 60)
+	st, err := ss.Subscribe("gyroscope", 60)
 	if err != nil {
-		if st, err = ss.Subscribe("accelerometer", 60); err != nil {
-			return nil, err
-		}
+		return nil, err
 	}
-	ss.Subscribe("linear_acceleration", 60)
+	k.seed = int64(rand.Uint32())
 	k.fill()
-	return gaugesFor(st, 2), nil
+	return gaugesFor(st, 3), nil
 }
 
 func (k *kaleidoscope) Help() []string {
 	return []string{
-		"Hold the phone up and turn it slowly, as you would turn a kaleidoscope: the glass tumbles to the new bottom and the pattern flows. Shake it for a jolt.",
-		"a  turn by itself (for a phone lying flat)    space  jolt    r  new glass",
+		"Turn the phone slowly about its screen, as you would turn a kaleidoscope: the glass turns against the mirrors and the pattern unfolds. Turn back and it comes back; hold still and it rests.",
+		"a  turn by itself    r  new glass",
 	}
 }
 
@@ -86,53 +82,48 @@ func (k *kaleidoscope) Key(c byte) {
 	switch c {
 	case 'a':
 		k.auto = !k.auto
-	case ' ':
-		k.kick = 0.3
 	case 'r':
+		k.seed++
 		k.fill()
 	}
 }
 
-// fill puts in a fresh handful of glass: enough to pack the chamber, the
-// flat pieces overlapping.
+// fill makes the chamber's glass: larger shards, and smaller beads and
+// rods in the loose layer.
 func (k *kaleidoscope) fill() {
-	k.pieces = k.pieces[:0]
-	area := 0.0
-	for area < 1.05*math.Pi*kalR*kalR {
-		s := shard{r: 1.1 + 1.6*k.rng.Float64(), color: k.rng.Intn(len(kalColors)), a: k.rng.Float64() * 6.3}
-		switch k.rng.Intn(4) {
-		case 0: // a bead
-		case 1: // a triangle shard
-			for i := 0; i < 3; i++ {
-				a := float64(i)*2*math.Pi/3 + (k.rng.Float64()-0.5)*0.6
-				s.shape = append(s.shape, [2]float64{s.r * math.Cos(a), s.r * math.Sin(a)})
-			}
-		case 2: // a diamond
-			s.shape = [][2]float64{{s.r, 0}, {0, s.r * 0.55}, {-s.r, 0}, {0, -s.r * 0.55}}
-		default: // an irregular shard
-			n := 4 + k.rng.Intn(2)
+	rng := rand.New(rand.NewSource(k.seed))
+	piece := func(rmin, rmax float64, rods bool) glass {
+		// Even in radius, not area: near the middle the wedge is small, and
+		// would otherwise go bare. Out to the screen's corners.
+		a, d := rng.Float64()*2*math.Pi, rng.Float64()*1.35
+		g := glass{x: d * math.Cos(a), y: d * math.Sin(a), r: rmin + (rmax-rmin)*rng.Float64(), rgb: jewels[rng.Intn(len(jewels))]}
+		turn := rng.Float64() * 2 * math.Pi
+		switch kind := rng.Intn(5); {
+		case kind == 0: // round
+		case rods && kind <= 2: // a rod
+			g.shape = [][2]float64{{-g.r, -g.r * 0.22}, {g.r, -g.r * 0.22}, {g.r, g.r * 0.22}, {-g.r, g.r * 0.22}}
+		default: // a shard: 3 to 6 corners
+			n := 3 + rng.Intn(4)
 			for i := 0; i < n; i++ {
-				a := float64(i) * 2 * math.Pi / float64(n)
-				rr := s.r * (0.7 + 0.3*k.rng.Float64())
-				s.shape = append(s.shape, [2]float64{rr * math.Cos(a), rr * math.Sin(a)})
+				b := float64(i)*2*math.Pi/float64(n) + (rng.Float64()-0.5)*0.5
+				rr := g.r * (0.7 + 0.3*rng.Float64())
+				g.shape = append(g.shape, [2]float64{rr * math.Cos(b), rr * math.Sin(b)})
 			}
 		}
-		for tries := 0; tries < 50; tries++ { // somewhere free-ish
-			a, rr := k.rng.Float64()*2*math.Pi, (kalR-s.r)*math.Sqrt(k.rng.Float64())
-			s.p = [2]float64{rr * math.Cos(a), rr * math.Sin(a)}
-			ok := true
-			for _, o := range k.pieces {
-				if math.Hypot(o.p[0]-s.p[0], o.p[1]-s.p[1]) < 0.8*(o.r+s.r) {
-					ok = false
-					break
-				}
-			}
-			if ok {
-				break
-			}
+		for i, p := range g.shape { // at a random angle
+			c, s := math.Cos(turn), math.Sin(turn)
+			g.shape[i] = [2]float64{p[0]*c - p[1]*s, p[0]*s + p[1]*c}
 		}
-		k.pieces = append(k.pieces, s)
-		area += math.Pi * s.r * s.r * 0.7
+		return g
+	}
+	k.shards, k.beads = nil, nil
+	// Packed, as a real object cell: the wedge the mirrors show is a
+	// twelfth of the chamber, and every part of it should hold glass.
+	for i := 0; i < 150; i++ {
+		k.shards = append(k.shards, piece(0.06, 0.17, false))
+	}
+	for i := 0; i < 110; i++ {
+		k.beads = append(k.beads, piece(0.03, 0.08, true))
 	}
 }
 
@@ -140,211 +131,155 @@ func (k *kaleidoscope) Draw(v *View, ss *Streams, t, dt float64) {
 	if v.W < 10 || v.H < 6 {
 		return
 	}
-	dt = math.Min(dt, 0.05)
-	// Gravity in the screen's plane (y down); lying flat, it fades out.
-	spec := "gravity"
-	if ss.Get(spec) == nil {
-		spec = "accelerometer"
-	}
-	var gx, gy float64
-	if r := ss.Get(spec).Read(); r.OK && len(r.V) >= 3 {
-		a := toScreen(ss, r.V)
-		gx, gy = -a[0]/9.8, a[1]/9.8
-	}
-	if k.auto {
-		k.turn += dt * 0.35
-		gx, gy = math.Sin(k.turn), math.Cos(k.turn)
-	}
-	k.down[0] += (gx - k.down[0]) * math.Min(1, dt*6)
-	k.down[1] += (gy - k.down[1]) * math.Min(1, dt*6)
-	var shake [2]float64
-	if s := ss.Get("linear_acceleration"); s != nil {
-		if r := s.Read(); r.OK && len(r.V) >= 3 {
-			la := toScreen(ss, r.V)
-			shake = [2]float64{-la[0] * kalShake, la[1] * kalShake}
+	dt = math.Min(dt, 0.1)
+	// Turning about the screen, with a dead band so the sensor's noise
+	// doesn't stir it.
+	if r := ss.Get("gyroscope").Read(); r.OK && len(r.V) >= 3 {
+		if wz := toScreen(ss, r.V)[2]; math.Abs(wz) > 0.04 {
+			k.turn += (wz - math.Copysign(0.04, wz)) * dt
 		}
 	}
-	if k.kick > 0 {
-		k.kick -= dt
-		shake = [2]float64{80 * math.Sin(t*47), 80 * math.Cos(t*39)}
+	if k.auto {
+		k.turn += 0.12 * dt
 	}
-	for s := 0; s < 4; s++ {
-		k.step(dt/4, shake)
+	// Ease toward the targets, and land on them: resting means still.
+	ease := func(x *float64, to, rate float64) {
+		*x += (to - *x) * math.Min(1, dt*rate)
+		if math.Abs(to-*x) < 1e-3 {
+			*x = to
+		}
 	}
+	ease(&k.shown, k.turn, 6)
+	ease(&k.loose, k.shown*0.7, 2) // the beads lag, then settle
 	k.render(v)
 }
 
-// step moves the glass: gravity and shakes, the oil's drag, the chamber's
-// wall, and knocks between pieces (which set them spinning).
-func (k *kaleidoscope) step(h float64, shake [2]float64) {
-	g := [2]float64{k.down[0]*kalG + shake[0], k.down[1]*kalG + shake[1]}
-	for i := range k.pieces {
-		p := &k.pieces[i]
-		p.v[0] += g[0] * h
-		p.v[1] += g[1] * h
-		f := math.Max(0, 1-1.2*h)
-		p.v[0], p.v[1], p.w = p.v[0]*f, p.v[1]*f, p.w*math.Max(0, 1-1.5*h)
-		p.p[0] += p.v[0] * h
-		p.p[1] += p.v[1] * h
-		p.a += p.w * h
-		// The wall: rolling along it turns the piece.
-		if d := math.Hypot(p.p[0], p.p[1]); d > kalR-p.r {
-			nx, ny := p.p[0]/d, p.p[1]/d
-			p.p[0], p.p[1] = nx*(kalR-p.r), ny*(kalR-p.r)
-			if vn := p.v[0]*nx + p.v[1]*ny; vn > 0 {
-				p.v[0] -= 1.3 * vn * nx
-				p.v[1] -= 1.3 * vn * ny
-			}
-			tang := -p.v[0]*ny + p.v[1]*nx
-			p.w += (tang/p.r - p.w) * math.Min(1, 4*h)
-		}
-	}
-	for i := range k.pieces {
-		for j := i + 1; j < len(k.pieces); j++ {
-			a, b := &k.pieces[i], &k.pieces[j]
-			dx, dy := b.p[0]-a.p[0], b.p[1]-a.p[1]
-			d := math.Hypot(dx, dy)
-			min := 0.6 * (a.r + b.r) // flat pieces slip over each other
-			if d >= min || d < 1e-9 {
-				continue
-			}
-			nx, ny := dx/d, dy/d
-			push := (min - d) / 2
-			a.p[0], a.p[1] = a.p[0]-nx*push, a.p[1]-ny*push
-			b.p[0], b.p[1] = b.p[0]+nx*push, b.p[1]+ny*push
-			if vn := (b.v[0]-a.v[0])*nx + (b.v[1]-a.v[1])*ny; vn < 0 {
-				j := -1.3 * vn / 2
-				a.v[0], a.v[1] = a.v[0]-nx*j, a.v[1]-ny*j
-				b.v[0], b.v[1] = b.v[0]+nx*j, b.v[1]+ny*j
-				tang := -(b.v[0]-a.v[0])*ny + (b.v[1]-a.v[1])*nx
-				a.w -= tang * 0.1
-				b.w += tang * 0.1
-			}
-		}
-	}
-}
-
-// sample colors a point of the chamber: the glass covering it, from the
-// top; its edges dark; two layers deepen the color. It returns the
-// brightness and the color ramp, or the light behind (nil ramp).
-func (k *kaleidoscope) sample(x, y float64) (float64, []uint8, bool) {
-	layers, top, edge := 0, -1, false
-	for i := len(k.pieces) - 1; i >= 0; i-- {
-		p := &k.pieces[i]
-		dx, dy := x-p.p[0], y-p.p[1]
-		if dx*dx+dy*dy > p.r*p.r*1.2 {
+// transmit is the color the glass of one layer passes at chamber point
+// (x, y) (white where there's none), and whether any glass is there. At a
+// piece's edge the leading is dark; just inside, the bevel is bright.
+func transmit(layer []glass, x, y float64) ([3]float64, bool) {
+	out := [3]float64{1, 1, 1}
+	hit := false
+	for i := range layer {
+		g := &layer[i]
+		dx, dy := x-g.x, y-g.y
+		if dx*dx+dy*dy > g.r*g.r*1.1 {
 			continue
 		}
-		// Into the piece's own frame.
-		c, s := math.Cos(-p.a), math.Sin(-p.a)
-		lx, ly := dx*c-dy*s, dx*s+dy*c
-		in, near := false, false
-		if p.shape == nil {
-			d := math.Hypot(lx, ly)
-			in, near = d < p.r*0.8, d > p.r*0.8-0.28
+		var edge float64 // distance inside the edge; < 0 outside
+		if g.shape == nil {
+			edge = g.r*0.85 - math.Hypot(dx, dy)
 		} else {
-			in, near = polyInside(p.shape, lx, ly)
+			edge = polyEdge(g.shape, dx, dy)
 		}
-		if !in {
+		if edge < 0 {
 			continue
 		}
-		layers++
-		if top < 0 {
-			top, edge = i, near
+		hit = true
+		k := 1.0
+		switch {
+		case edge < 0.012:
+			k = 0.08 // leading
+		case edge < 0.04:
+			k = 1.35 // the bevel catches the light
+		default:
+			k = 0.85 + 0.15*math.Sin(dx*40+dy*23) // a faint texture
+		}
+		for c := 0; c < 3; c++ {
+			out[c] *= g.rgb[c] * k
 		}
 	}
-	if top < 0 {
-		return 0, nil, false
-	}
-	b := 0.8
-	if layers > 1 {
-		b = 0.62 // seen through another piece, deeper
-	}
-	if edge {
-		b = 0.12
-	}
-	return b, kalColors[k.pieces[top].color], edge
+	return out, hit
 }
 
-// polyInside reports whether (x, y) is inside a convex polygon, and
-// whether it's near its edge.
-func polyInside(pts [][2]float64, x, y float64) (bool, bool) {
-	sign, nearest := 0.0, math.Inf(1)
+// polyEdge is how far (x, y) lies inside a convex polygon (< 0 outside).
+func polyEdge(pts [][2]float64, x, y float64) float64 {
+	sign, inside := 0.0, math.Inf(1)
 	for i := range pts {
 		a, b := pts[i], pts[(i+1)%len(pts)]
 		ex, ey := b[0]-a[0], b[1]-a[1]
-		l := math.Hypot(ex, ey)
-		cross := (ex*(y-a[1]) - ey*(x-a[0])) / l // signed distance from the edge
+		d := (ex*(y-a[1]) - ey*(x-a[0])) / math.Hypot(ex, ey)
 		if sign == 0 {
-			sign = math.Copysign(1, cross)
+			sign = math.Copysign(1, d)
 		}
-		if cross*sign < 0 {
-			return false, false
-		}
-		nearest = math.Min(nearest, math.Abs(cross))
+		inside = math.Min(inside, d*sign)
 	}
-	return true, nearest < 0.28
+	return inside
 }
 
-// render folds every character into the mirror triangle, and looks at the
-// chamber through it.
 func (k *kaleidoscope) render(v *View) {
 	w, h := float64(v.W), float64(v.H)
-	S := math.Min(w, 2*h) * 0.62 // the triangle's side, in columns: mirrored a few times across
 	cx, cy := w/2, h/2
-	// The triangle, centered on the screen: corners, and inward edge normals.
-	r := S / math.Sqrt(3)
-	var corner [3][2]float64
-	for i := range corner {
-		a := -math.Pi/2 + float64(i)*2*math.Pi/3
-		corner[i] = [2]float64{r * math.Cos(a), r * math.Sin(a)}
-	}
-	type edge struct{ p, n [2]float64 }
-	var edges [3]edge
-	for i := range edges {
-		a, b := corner[i], corner[(i+1)%3]
-		nx, ny := -(b[1] - a[1]), b[0]-a[0]
-		l := math.Hypot(nx, ny)
-		nx, ny = nx/l, ny/l
-		if nx*(-a[0])+ny*(-a[1]) < 0 { // toward the center
-			nx, ny = -nx, -ny
-		}
-		edges[i] = edge{a, [2]float64{nx, ny}}
-	}
-	scale := kalR * 0.6 / r // the triangle sees the middle of the chamber, so pieces show large
+	R := math.Hypot(cx, cy*2) * 0.72 // the chamber's radius on screen, columns
+	ca, sa := math.Cos(-k.shown), math.Sin(-k.shown)
+	cb, sb := math.Cos(-k.loose), math.Sin(-k.loose)
 	parallelRows(v.H, func(y int) {
 		for x := 0; x < v.W; x++ {
-			px, py := float64(x)+0.5-cx, (float64(y)+0.5-cy)*2
-			// Reflect across whichever mirror the point is behind, until
-			// it's inside the triangle.
-			for it := 0; it < 64; it++ {
-				moved := false
-				for _, e := range edges {
-					if d := (px-e.p[0])*e.n[0] + (py-e.p[1])*e.n[1]; d < 0 {
-						px -= 2 * d * e.n[0]
-						py -= 2 * d * e.n[1]
-						moved = true
-					}
-				}
-				if !moved {
-					break
-				}
+			px, py := (float64(x)+0.5-cx)/R, (cy-float64(y)-0.5)*2/R
+			r := math.Hypot(px, py)
+			// Fold into the wedge between the mirrors.
+			phi := math.Mod(math.Atan2(py, px)+4*math.Pi, 2*kalSector)
+			if phi > kalSector {
+				phi = 2*kalSector - phi
 			}
-			b, ramp, edge := k.sample(px*scale, py*scale)
-			// The eyepiece: darker toward the corners.
-			vx, vy := (float64(x)+0.5-cx)/cx, (float64(y)+0.5-cy)/cy
-			vig := 1 - 0.45*smoothstep(0.55, 1.35, math.Hypot(vx, vy))
-			if ramp == nil { // the light behind the glass
-				i := 0.75 * vig
-				v.Set(x, y, ":."[boolIdx(i < 0.55)], mzPick(kalLight, i))
+			fx, fy := r*math.Cos(phi), r*math.Sin(phi)
+			// The two layers, each turned by its own angle.
+			a, ha := transmit(k.shards, fx*ca-fy*sa, fx*sa+fy*ca)
+			b, hb := transmit(k.beads, fx*cb-fy*sb, fx*sb+fy*cb)
+			light := 1.15 * (1 - 0.55*smoothstep(0.1, 1.25, r)) // brightest in the middle
+			var rgb [3]float64
+			if ha || hb {
+				for c := 0; c < 3; c++ {
+					rgb[c] = a[c] * b[c] * light
+				}
+			} else {
+				// No glass: frosted, faintly violet, with a grain.
+				fr := 0.1 + 0.05*math.Sin(fx*57+fy*31)*math.Sin(fx*23-fy*41)
+				rgb = [3]float64{fr * 0.8 * light, fr * 0.55 * light, fr * 1.3 * light}
+			}
+			lum := 0.3*rgb[0] + 0.55*rgb[1] + 0.15*rgb[2]
+			const ramp = " .:-=+*#%@"
+			ch := ramp[min(len(ramp)-1, int(math.Sqrt(clamp01(lum))*float64(len(ramp)-1)+0.5))]
+			if ch == ' ' {
 				continue
 			}
-			i := b * vig
-			ch := "%#"[boolIdx(b < 0.6)]
-			if edge {
-				ch = '+'
-			}
-			v.Set(x, y, ch, mzPick(ramp, i))
+			v.Set(x, y, ch, rgb256(rgb))
 		}
 	})
+}
+
+// rgb256 is the terminal color nearest an RGB color (0..1): from the 6x6x6
+// cube, or the gray ramp for grays.
+func rgb256(c [3]float64) uint8 {
+	levels := [6]float64{0, 95, 135, 175, 215, 255}
+	var idx [3]int
+	var cube [3]float64
+	for i := 0; i < 3; i++ {
+		v := clamp01(c[i]) * 255
+		best := 0
+		for j := 1; j < 6; j++ {
+			if math.Abs(levels[j]-v) < math.Abs(levels[best]-v) {
+				best = j
+			}
+		}
+		idx[i], cube[i] = best, levels[best]
+	}
+	col := uint8(16 + 36*idx[0] + 6*idx[1] + idx[2])
+	// A gray may be nearer.
+	avg := (clamp01(c[0]) + clamp01(c[1]) + clamp01(c[2])) / 3 * 255
+	g := int(math.Round((avg - 8) / 10))
+	g = max(0, min(23, g))
+	gv := float64(8 + 10*g)
+	dist := func(a [3]float64) float64 {
+		s := 0.0
+		for i := 0; i < 3; i++ {
+			d := a[i] - clamp01(c[i])*255
+			s += d * d
+		}
+		return s
+	}
+	if dist([3]float64{gv, gv, gv}) < dist(cube) {
+		return uint8(232 + g)
+	}
+	return col
 }

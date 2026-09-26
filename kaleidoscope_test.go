@@ -1,0 +1,55 @@
+package main
+
+import (
+	"math"
+	"testing"
+)
+
+func kalFrame(k *kaleidoscope, ss *Streams, f *Frame, gz float64, frames int, now *float64) string {
+	for i := 0; i < frames; i++ {
+		// Held still, a little sensor noise; turning, a clean turn (so a
+		// turn and its reverse are exactly opposite).
+		noise := 0.0
+		if gz == 0 {
+			noise = 0.02 * math.Sin(float64(i)*2.7)
+		}
+		ss.Get("gyroscope").push(clientEvent([]float64{noise, -noise, gz + noise}))
+		*now += 1.0 / 30
+		f.Resize(64, 40)
+		k.Draw(f.View(0, 0, 64, 40), ss, *now, 1.0/30)
+	}
+	return string(f.chars)
+}
+
+// Held still (only sensor noise), it doesn't move; a turn changes the
+// pattern, and turning back brings it back. And it's mirror symmetric.
+func TestKaleidoscopeStillAndReversible(t *testing.T) {
+	ss := &Streams{byKey: map[string]*Stream{"gyroscope": {}}}
+	k := &kaleidoscope{seed: 3}
+	k.fill()
+	var f Frame
+	now := 0.0
+	a := kalFrame(k, ss, &f, 0, 60, &now)
+	b := kalFrame(k, ss, &f, 0, 90, &now)
+	if a != b {
+		t.Error("the pattern moved while the phone was still")
+	}
+	c := kalFrame(k, ss, &f, 1.0, 30, &now) // a quarter-ish turn
+	c = kalFrame(k, ss, &f, 0, 120, &now)
+	if c == a {
+		t.Error("turning didn't change the pattern")
+	}
+	d := kalFrame(k, ss, &f, -1.0, 30, &now) // and back
+	d = kalFrame(k, ss, &f, 0, 120, &now)
+	if d != a {
+		t.Error("turning back didn't bring the pattern back")
+	}
+	// Left-right and top-bottom mirror symmetry.
+	for y := 0; y < 40; y++ {
+		for x := 0; x < 64; x++ {
+			if f.chars[y*64+x] != f.chars[y*64+63-x] || f.chars[y*64+x] != f.chars[(39-y)*64+x] {
+				t.Fatalf("not symmetric at %d,%d", x, y)
+			}
+		}
+	}
+}
