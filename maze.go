@@ -10,37 +10,83 @@ import (
 func init() {
 	register(entry{
 		name: "maze",
-		desc: "a marble maze: tilt the phone to roll the ball to the flag, avoiding the holes",
+		desc: "a marble maze: tilt the phone to roll a ball to the goal, across narrow bridges over the void",
 		uses: []string{"gravity", "accelerometer"},
-		new:  func(specs []string) Demo { return &maze{} },
+		new:  func(specs []string) Demo { return &maze{level: 1} },
 	})
 }
 
-// maze is a tilt game: a random maze (recursive backtracker) drawn in the
-// classic +--+ style, a marble that rolls with the phone's tilt (friction,
-// bounces off walls), holes in some dead ends that send you back to the
-// start, and a flag in the far corner. Each solve shows your time.
+// maze is a tilt game on a small board seen from above. The ball moves in
+// continuous space with momentum, rolls (its stripes turn with it) and
+// bounces a little off walls. Some stretches have no walls at all: a
+// narrow bridge over the void, and rolling off it drops the ball and sends
+// it back to the start. Holes in dead ends do the same. Each solved board
+// gets harder: more and longer bridges, narrower ones.
+//
+// The picture is a tiny 3D renderer, per character, without ray marching:
+// the view looks straight down in the room, so tilting the phone shows the
+// walls' sides and the edges of the board (parallax), a light from above
+// shades walls and ball and casts shadows, and the ball is a real sphere.
+//
+// World units are cells; x right, y down the screen, z up out of the board.
 type maze struct {
-	w, h       int    // screen cells
-	cols, rows int    // maze cells
-	wall       []bool // per screen cell: solid
-	holes      [][2]float64
-	goal       [2]float64
-	start      [2]float64
-	x, y       float64 // ball, screen cells (y in rows)
-	vx, vy     float64 // cells per second (y in rows per second)
-	trail      [][2]int
-	began      float64 // when this run started
-	best       float64
-	won, fell  float64 // times of the last win / fall, for animations
-	rng        *rand.Rand
 	seed       int64
+	level      int
+	cols, rows int
+	cells      []mcell
+	stripW     float64 // bridge width
+	walls      []box
+	near       [][]int // per cell: the walls that can touch it
+	holes      [][2]float64
+	start      [2]float64
+	goal       [2]float64
+
+	x, y, z    float64 // ball: center over the board; z < 0 when falling
+	vx, vy, vz float64
+	rot        Mat3 // ball orientation, for its stripes
+	state      int
+	since      float64 // when the state began
+	target     [2]float64
+	began      float64
+	best       float64
+	falls      int
+	pending    byte // key to act on at the next frame ('n', 'r')
+	up         Vec3 // smoothed room up, board frame
+	hasUp      bool
+	beep       bool
+	lastBeep   float64
+	out        interface{ Write([]byte) (int, error) }
+}
+
+type box struct{ x0, y0, x1, y1 float64 }
+
+type mcell struct {
+	open   [4]bool // right, left, down, up
+	bridge bool
+	hole   bool
 }
 
 const (
-	cellW = 4 // screen columns per maze cell
-	cellH = 2 // screen rows per maze cell
+	wallT   = 0.2  // wall thickness
+	wallH   = 0.3  // wall height
+	ballR   = 0.27 // ball radius
+	slabT   = 0.35 // board thickness, seen at bridge edges and in holes
+	holeR   = 0.26
+	goalR   = 0.3
+	tiltK   = 8.0 // cells/s^2 per m/s^2 of downhill gravity
+	maxAmp  = 1.3 // cap on the parallax shift per unit of height
+	parAmp  = 2.2 // parallax exaggeration: real would be 1
+	fallDur = 1.3
+	winDur  = 3.5
 )
+
+const (
+	rolling = iota
+	falling
+	solved
+)
+
+var dirs = [4][2]int{{1, 0}, {-1, 0}, {0, 1}, {0, -1}}
 
 func (m *maze) Setup(ss *Streams) ([]*Gauge, error) {
 	m.seed = time.Now().UnixNano()
@@ -55,256 +101,678 @@ func (m *maze) Setup(ss *Streams) ([]*Gauge, error) {
 
 func (m *maze) Help() []string {
 	return []string{
-		"Tilt the phone to roll the marble to the flag (*) in the far corner. The holes (@) send you back to the start.",
-		"n  new maze    r  back to the start",
+		"Tilt the phone to roll the ball into the glowing goal. It keeps its momentum, so brake by tilting back.",
+		"Bridges have no walls: roll off one, or into a hole, and the ball falls and goes back to the start. Every solved board adds bridges and makes them narrower.",
+		"n  new board    r  back to the start    b  vibrate on hard bumps (Termux bell)",
 	}
 }
 
 func (m *maze) Key(k byte) {
 	switch k {
-	case 'n':
-		m.seed++
-		m.w = 0
-	case 'r':
-		m.reset(0)
+	case 'n', 'r':
+		m.pending = k
+	case 'b':
+		m.beep = !m.beep
 	}
 }
 
-// generate carves a maze with a randomized depth-first search, then puts
-// holes in some dead ends.
+// SetOut gives the demo the terminal, for the bell.
+func (m *maze) SetOut(w interface{ Write([]byte) (int, error) }) { m.out = w }
+
+// generate makes a board that fits a w x h view: a perfect maze (randomized
+// depth-first search), the goal in the cell farthest from the start, runs of
+// bridge cells along the way there, holes in some dead ends.
 func (m *maze) generate(w, h int) {
-	m.w, m.h = w, h
-	m.rng = rand.New(rand.NewSource(m.seed))
-	m.cols, m.rows = max(2, (w-1)/cellW), max(2, (h-1)/cellH)
-	m.wall = make([]bool, w*h)
-	// Start with every wall standing: the +--+ grid.
-	for r := 0; r <= m.rows; r++ {
-		for c := 0; c <= m.cols*cellW; c++ {
-			m.setWall(c, r*cellH, true)
-		}
-	}
-	for c := 0; c <= m.cols; c++ {
-		for r := 0; r <= m.rows*cellH; r++ {
-			m.setWall(c*cellW, r, true)
-		}
-	}
-	visited := make([]bool, m.cols*m.rows)
-	degree := make([]int, m.cols*m.rows)
-	stack := [][2]int{{0, 0}}
+	rng := rand.New(rand.NewSource(m.seed))
+	m.cols = max(3, min(7, int(math.Round(float64(w)/15))))
+	cw := float64(w) / float64(m.cols)
+	m.rows = max(3, min(9, int(float64(h)*2/cw)))
+	n := m.cols * m.rows
+	m.cells = make([]mcell, n)
+	idx := func(c, r int) int { return r*m.cols + c }
+
+	visited := make([]bool, n)
+	stack := []int{0}
 	visited[0] = true
 	for len(stack) > 0 {
-		c, r := stack[len(stack)-1][0], stack[len(stack)-1][1]
-		var next [][3]int
-		for _, d := range [][3]int{{1, 0, 0}, {-1, 0, 1}, {0, 1, 2}, {0, -1, 3}} {
-			nc, nr := c+d[0], r+d[1]
-			if nc >= 0 && nr >= 0 && nc < m.cols && nr < m.rows && !visited[nr*m.cols+nc] {
-				next = append(next, [3]int{nc, nr, d[2]})
+		cur := stack[len(stack)-1]
+		c, r := cur%m.cols, cur/m.cols
+		var next []int
+		for d, dv := range dirs {
+			nc, nr := c+dv[0], r+dv[1]
+			if nc >= 0 && nr >= 0 && nc < m.cols && nr < m.rows && !visited[idx(nc, nr)] {
+				next = append(next, d)
 			}
 		}
 		if len(next) == 0 {
 			stack = stack[:len(stack)-1]
 			continue
 		}
-		n := next[m.rng.Intn(len(next))]
-		// knock down the wall between (c, r) and n
-		switch n[2] {
-		case 0:
-			m.clearSpan((c+1)*cellW, r*cellH+1, 1, cellH-1)
-		case 1:
-			m.clearSpan(c*cellW, r*cellH+1, 1, cellH-1)
-		case 2:
-			m.clearSpan(c*cellW+1, (r+1)*cellH, cellW-1, 1)
-		case 3:
-			m.clearSpan(c*cellW+1, r*cellH, cellW-1, 1)
+		d := next[rng.Intn(len(next))]
+		ni := idx(c+dirs[d][0], r+dirs[d][1])
+		m.cells[cur].open[d] = true
+		m.cells[ni].open[d^1] = true
+		visited[ni] = true
+		stack = append(stack, ni)
+	}
+
+	// The goal is the farthest cell; the path to it gets the bridges.
+	dist := make([]int, n)
+	parent := make([]int, n)
+	for i := range dist {
+		dist[i] = -1
+	}
+	dist[0] = 0
+	queue := []int{0}
+	far := 0
+	for len(queue) > 0 {
+		cur := queue[0]
+		queue = queue[1:]
+		if dist[cur] > dist[far] {
+			far = cur
 		}
-		degree[r*m.cols+c]++
-		degree[n[1]*m.cols+n[0]]++
-		visited[n[1]*m.cols+n[0]] = true
-		stack = append(stack, [2]int{n[0], n[1]})
-	}
-	center := func(c, r int) [2]float64 {
-		return [2]float64{float64(c*cellW) + float64(cellW)/2, float64(r*cellH) + float64(cellH)/2}
-	}
-	m.start = center(0, 0)
-	m.goal = center(m.cols-1, m.rows-1)
-	m.holes = m.holes[:0]
-	for r := 0; r < m.rows; r++ {
-		for c := 0; c < m.cols; c++ {
-			if degree[r*m.cols+c] == 1 && (c+r) > 2 && !(c == m.cols-1 && r == m.rows-1) && m.rng.Intn(3) == 0 {
-				m.holes = append(m.holes, center(c, r))
+		for d, dv := range dirs {
+			if !m.cells[cur].open[d] {
+				continue
+			}
+			ni := idx(cur%m.cols+dv[0], cur/m.cols+dv[1])
+			if dist[ni] < 0 {
+				dist[ni], parent[ni] = dist[cur]+1, cur
+				queue = append(queue, ni)
 			}
 		}
 	}
-	m.reset(0)
-}
-
-func (m *maze) setWall(x, y int, on bool) {
-	if x >= 0 && y >= 0 && x < m.w && y < m.h {
-		m.wall[y*m.w+x] = on
+	var path []int // start to goal
+	for c := far; c != 0; c = parent[c] {
+		path = append([]int{c}, path...)
 	}
+	path = append([]int{0}, path...)
+	inner := path[1 : len(path)-1] // bridges never at the start or the goal
+	runs, runLen := 1+(m.level-1)/2, min(2+(m.level-1)/3, 4)
+	for i := 0; i < runs && len(inner) > 0; i++ {
+		s := rng.Intn(len(inner))
+		for k := s; k < min(s+runLen, len(inner)); k++ {
+			m.cells[inner[k]].bridge = true
+		}
+	}
+	for i := 0; i < m.level-3; i++ { // later, bridges off the path too
+		if c := rng.Intn(n); c != 0 && c != far {
+			m.cells[c].bridge = true
+		}
+	}
+	m.stripW = math.Max(0.28, 0.46-0.03*float64(m.level-1))
+
+	center := func(i int) [2]float64 { return [2]float64{float64(i%m.cols) + 0.5, float64(i/m.cols) + 0.5} }
+	m.start, m.goal = center(0), center(far)
+	m.holes = m.holes[:0]
+	nh := 0
+	for i := range m.cells {
+		c := &m.cells[i]
+		deg := 0
+		for _, o := range c.open {
+			if o {
+				deg++
+			}
+		}
+		if deg == 1 && i != 0 && i != far && !c.bridge && nh < m.level && rng.Intn(2) == 0 {
+			c.hole = true
+			m.holes = append(m.holes, center(i))
+			nh++
+		}
+	}
+	m.buildWalls()
+	m.reset()
 }
 
-func (m *maze) clearSpan(x, y, w, h int) {
-	for yy := y; yy < y+h; yy++ {
-		for xx := x; xx < x+w; xx++ {
-			m.setWall(xx, yy, false)
+// buildWalls turns the cells into wall boxes. Normal cells are rooms: every
+// closed side of theirs gets a wall. Bridge cells have none.
+func (m *maze) buildWalls() {
+	m.walls = m.walls[:0]
+	normal := func(c, r int) bool {
+		return c >= 0 && r >= 0 && c < m.cols && r < m.rows && !m.cells[r*m.cols+c].bridge
+	}
+	const t = wallT / 2
+	wallAt := make(map[[2]int]bool) // grid corners that walls touch
+	for r := 0; r < m.rows; r++ {
+		for i := 0; i <= m.cols; i++ { // vertical edge left of cell (i, r)
+			closed := i == 0 || i == m.cols || !m.cells[r*m.cols+i-1].open[0]
+			if closed && (normal(i-1, r) || normal(i, r)) {
+				m.walls = append(m.walls, box{float64(i) - t, float64(r), float64(i) + t, float64(r + 1)})
+				wallAt[[2]int{i, r}], wallAt[[2]int{i, r + 1}] = true, true
+			}
+		}
+	}
+	for r := 0; r <= m.rows; r++ {
+		for i := 0; i < m.cols; i++ { // horizontal edge above cell (i, r)
+			closed := r == 0 || r == m.rows || !m.cells[(r-1)*m.cols+i].open[2]
+			if closed && (normal(i, r-1) || normal(i, r)) {
+				m.walls = append(m.walls, box{float64(i), float64(r) - t, float64(i + 1), float64(r) + t})
+				wallAt[[2]int{i, r}], wallAt[[2]int{i + 1, r}] = true, true
+			}
+		}
+	}
+	for p := range wallAt { // posts fill the corners
+		x, y := float64(p[0]), float64(p[1])
+		m.walls = append(m.walls, box{x - t, y - t, x + t, y + t})
+	}
+	m.near = make([][]int, m.cols*m.rows)
+	const reach = 0.7
+	for ci := range m.near {
+		cx, cy := float64(ci%m.cols), float64(ci/m.cols)
+		for wi, b := range m.walls {
+			if b.x1 > cx-reach && b.x0 < cx+1+reach && b.y1 > cy-reach && b.y0 < cy+1+reach {
+				m.near[ci] = append(m.near[ci], wi)
+			}
 		}
 	}
 }
 
-func (m *maze) solid(x, y float64) bool {
-	xi, yi := int(math.Floor(x)), int(math.Floor(y))
-	if xi < 0 || yi < 0 || xi >= m.w || yi >= m.h {
-		return true
-	}
-	return m.wall[yi*m.w+xi]
+func (m *maze) reset() {
+	m.x, m.y, m.z = m.start[0], m.start[1], 0
+	m.vx, m.vy, m.vz = 0, 0, 0
+	m.rot = Identity()
+	m.state = rolling
 }
 
-func (m *maze) reset(t float64) {
-	m.x, m.y = m.start[0], m.start[1]
-	m.vx, m.vy = 0, 0
-	m.trail = m.trail[:0]
-	m.began = t
+func (m *maze) cellAt(x, y float64) int {
+	c := max(0, min(m.cols-1, int(math.Floor(x))))
+	r := max(0, min(m.rows-1, int(math.Floor(y))))
+	return r*m.cols + c
+}
+
+// floorAt reports whether the board is solid at (x, y): not the void around
+// a bridge, a hole or the goal.
+func (m *maze) floorAt(x, y float64) bool {
+	if x < 0 || y < 0 || x >= float64(m.cols) || y >= float64(m.rows) {
+		return false
+	}
+	if math.Hypot(x-m.goal[0], y-m.goal[1]) < goalR {
+		return false
+	}
+	c := &m.cells[m.cellAt(x, y)]
+	fx, fy := x-math.Floor(x)-0.5, y-math.Floor(y)-0.5
+	if c.hole {
+		return math.Hypot(fx, fy) >= holeR
+	}
+	if !c.bridge {
+		return true
+	}
+	h := m.stripW / 2
+	if math.Abs(fx) <= h && math.Abs(fy) <= h {
+		return true
+	}
+	return c.open[0] && fx > 0 && math.Abs(fy) <= h || c.open[1] && fx < 0 && math.Abs(fy) <= h ||
+		c.open[2] && fy > 0 && math.Abs(fx) <= h || c.open[3] && fy < 0 && math.Abs(fx) <= h
+}
+
+// step integrates the rolling ball for dt under a downhill acceleration
+// (ax, ay) in m/s^2, and returns the hardest impact speed.
+func (m *maze) step(ax, ay, dt float64) float64 {
+	// Small fixed substeps: one step's worth of tilt stays below the bounce
+	// threshold, so a ball held against a wall rests instead of chattering,
+	// and a fast ball moves less than its radius between wall checks.
+	n := int(math.Ceil(dt / 0.004))
+	h := dt / float64(n)
+	impact := 0.0
+	for i := 0; i < n; i++ {
+		m.vx += ax * tiltK * h
+		m.vy += ay * tiltK * h
+		// Rolling resistance and a little drag, capped speed.
+		sp := math.Hypot(m.vx, m.vy)
+		if dec := (0.4 + 0.25*sp) * h; sp <= dec {
+			m.vx, m.vy = 0, 0
+		} else {
+			f := math.Min(sp-dec, 12) / sp
+			m.vx, m.vy = m.vx*f, m.vy*f
+		}
+		m.x += m.vx * h
+		m.y += m.vy * h
+		impact = math.Max(impact, m.collide())
+		m.roll(h)
+	}
+	return impact
+}
+
+// collide pushes the ball out of the walls and bounces it.
+func (m *maze) collide() float64 {
+	impact := 0.0
+	for _, wi := range m.near[m.cellAt(m.x, m.y)] {
+		b := m.walls[wi]
+		cx, cy := math.Max(b.x0, math.Min(m.x, b.x1)), math.Max(b.y0, math.Min(m.y, b.y1))
+		dx, dy := m.x-cx, m.y-cy
+		d2 := dx*dx + dy*dy
+		if d2 >= ballR*ballR {
+			continue
+		}
+		d := math.Sqrt(d2)
+		var nx, ny float64
+		if d < 1e-9 { // center inside the box: out the nearest side
+			l, r, u, dn := m.x-b.x0, b.x1-m.x, m.y-b.y0, b.y1-m.y
+			switch math.Min(math.Min(l, r), math.Min(u, dn)) {
+			case l:
+				nx, d = -1, -l
+			case r:
+				nx, d = 1, -r
+			case u:
+				ny, d = -1, -u
+			default:
+				ny, d = 1, -dn
+			}
+		} else {
+			nx, ny = dx/d, dy/d
+		}
+		m.x += nx * (ballR - d)
+		m.y += ny * (ballR - d)
+		if vn := m.vx*nx + m.vy*ny; vn < 0 {
+			e := 0.3 // a little bounce; none for gentle touches, so it rests
+			if -vn < 0.5 {
+				e = 0
+			}
+			m.vx -= (1 + e) * vn * nx
+			m.vy -= (1 + e) * vn * ny
+			m.vx, m.vy = m.vx*0.97, m.vy*0.97 // scrubbing against the wall
+			impact = math.Max(impact, -vn)
+		}
+	}
+	return impact
+}
+
+// roll turns the ball as it rolls without slipping: about the axis
+// up x velocity, by distance / radius.
+func (m *maze) roll(dt float64) {
+	sp := math.Hypot(m.vx, m.vy)
+	if sp < 1e-6 {
+		return
+	}
+	// The board frame has y down, so up x v comes out as (vy, -vx) here.
+	a := Vec3{m.vy / sp, -m.vx / sp, 0}
+	m.rot = rotAxis(a, sp*dt/ballR).Mul(m.rot)
+}
+
+// rotAxis is the rotation by angle about the unit axis a (Rodrigues).
+func rotAxis(a Vec3, angle float64) Mat3 {
+	c, s := math.Cos(angle), math.Sin(angle)
+	k := 1 - c
+	return Mat3{
+		{c + a[0]*a[0]*k, a[0]*a[1]*k - a[2]*s, a[0]*a[2]*k + a[1]*s},
+		{a[1]*a[0]*k + a[2]*s, c + a[1]*a[1]*k, a[1]*a[2]*k - a[0]*s},
+		{a[2]*a[0]*k - a[1]*s, a[2]*a[1]*k + a[0]*s, c + a[2]*a[2]*k},
+	}
+}
+
+// check starts a win or a fall after a step.
+func (m *maze) check(t float64) {
+	switch {
+	case math.Hypot(m.x-m.goal[0], m.y-m.goal[1]) < goalR:
+		m.state, m.since, m.target = solved, t, m.goal
+		if run := t - m.began; m.best == 0 || run < m.best {
+			m.best = run
+		}
+	case !m.floorAt(m.x, m.y):
+		m.state, m.since, m.target = falling, t, [2]float64{-1, -1}
+		m.falls++
+		for _, h := range m.holes {
+			if math.Hypot(m.x-h[0], m.y-h[1]) < holeR {
+				m.target = h
+			}
+		}
+	}
+}
+
+// drop moves a falling ball: down, a little onward, and into the middle of
+// a hole or the goal.
+func (m *maze) drop(dt float64) {
+	m.vz -= 14 * dt
+	m.z += m.vz * dt
+	m.x += m.vx * dt
+	m.y += m.vy * dt
+	f := math.Max(0, 1-3*dt)
+	m.vx, m.vy = m.vx*f, m.vy*f
+	if m.target[0] >= 0 {
+		k := math.Min(1, dt*8)
+		m.x += (m.target[0] - m.x) * k
+		m.y += (m.target[1] - m.y) * k
+	}
+	m.roll(dt)
 }
 
 func (m *maze) Draw(v *View, ss *Streams, t, dt float64) {
-	if v.W < 12 || v.H < 8 {
+	if v.W < 16 || v.H < 10 {
 		return
 	}
 	area := v.H - 1
-	if m.w != v.W || m.h != area {
+	dt = math.Min(dt, 0.1)
+	if m.cells == nil || m.pending == 'n' {
 		m.generate(v.W, area)
-		m.began = t
+		m.began, m.falls = t, 0
 	}
-	gx, gy := 0.0, 0.0
+	if m.pending == 'r' {
+		m.reset()
+		m.began, m.falls = t, 0
+	}
+	m.pending = 0
+
+	a := Vec3{0, 0, 9.81}
 	spec := "gravity"
 	if ss.Get(spec) == nil {
 		spec = "accelerometer"
 	}
-	if r := ss.Get(spec).Read(); r.OK && len(r.V) >= 2 {
-		a := toScreen(ss, r.V)
-		gx, gy = -a[0], a[1] // down on screen
+	if r := ss.Get(spec).Read(); r.OK && len(r.V) >= 3 {
+		a = toScreen(ss, r.V)
 	}
-
-	switch {
-	case m.won > 0 && t-m.won > 3: // show the win, then a new maze
-		m.won = 0
-		m.seed++
-		m.generate(v.W, area)
-		m.began = t
-	case m.fell > 0 && t-m.fell > 0.8: // after the fall animation
-		m.fell = 0
-		m.reset(t)
-	case m.won == 0 && m.fell == 0:
-		m.roll(gx, gy, dt, t)
+	// Screen frame (y up) to board frame (y down).
+	up := Vec3{a[0], -a[1], a[2]}.Norm()
+	if !m.hasUp {
+		m.up, m.hasUp = up, true
 	}
+	m.up = m.up.Add(up.Sub(m.up).Scale(math.Min(1, dt*12))).Norm()
 
-	// Walls: +--+ style from the solid grid.
-	for y := 0; y < m.h; y++ {
-		for x := 0; x < m.w; x++ {
-			if !m.wall[y*m.w+x] {
-				continue
-			}
-			h := x > 0 && m.wall[y*m.w+x-1] || x+1 < m.w && m.wall[y*m.w+x+1]
-			vv := y > 0 && m.wall[(y-1)*m.w+x] || y+1 < m.h && m.wall[(y+1)*m.w+x]
-			c := byte('+')
-			switch {
-			case h && !vv:
-				c = '-'
-			case vv && !h:
-				c = '|'
-			}
-			if x%cellW != 0 && y%cellH == 0 {
-				c = '-'
-			} else if x%cellW == 0 && y%cellH != 0 {
-				c = '|'
-			}
-			v.Set(x, y, c, 67)
+	switch m.state {
+	case rolling:
+		if imp := m.step(-a[0], a[1], dt); imp > 2.5 && m.beep && m.out != nil && t-m.lastBeep > 0.15 {
+			m.out.Write([]byte("\a"))
+			m.lastBeep = t
+		}
+		m.check(t)
+	case falling:
+		m.drop(dt)
+		if t-m.since > fallDur {
+			m.reset()
+		}
+	case solved:
+		m.drop(dt)
+		if t-m.since > winDur {
+			m.level++
+			m.seed++
+			m.generate(v.W, area)
+			m.began, m.falls = t, 0
 		}
 	}
-	for _, hl := range m.holes {
-		v.Set(int(hl[0])-1, int(hl[1]), '(', 237)
-		v.Set(int(hl[0]), int(hl[1]), '@', 235)
-		v.Set(int(hl[0])+1, int(hl[1]), ')', 237)
-	}
-	flag := byte('*')
-	if int(t*3)%2 == 0 {
-		flag = '+'
-	}
-	v.Set(int(m.goal[0]), int(m.goal[1]), flag, 214)
 
-	// The marble and a short fading trail.
-	for i, p := range m.trail {
-		if i < len(m.trail)-1 {
-			v.Set(p[0], p[1], '.', 240+uint8(i*12/len(m.trail)))
-		}
-	}
-	ball := byte('O')
-	if m.fell > 0 { // shrinking into the hole
-		ball = "Oo."[min(int((t-m.fell)/0.8*3), 2)]
-	}
-	v.Set(int(m.x), int(m.y), ball, 231)
+	m.render(v, area, t)
 
-	// Status line.
 	run := t - m.began
-	line := fmt.Sprintf("time %s", clock(time.Duration(run*float64(time.Second))))
+	if m.state == solved {
+		run = m.since - m.began
+	}
+	line := fmt.Sprintf("level %d   %s", m.level, clock(time.Duration(run*float64(time.Second))))
 	if m.best > 0 {
-		line += fmt.Sprintf("   best %s", clock(time.Duration(m.best*float64(time.Second))))
+		line += "   best " + clock(time.Duration(m.best*float64(time.Second)))
 	}
-	col := uint8(250)
-	if m.won > 0 {
-		line = fmt.Sprintf("SOLVED in %s!", clock(time.Duration((m.won-m.began)*float64(time.Second))))
-		col = 214
+	if m.falls > 0 {
+		line += fmt.Sprintf("   falls %d", m.falls)
 	}
-	v.Text(max(0, (v.W-len(line))/2), v.H-1, line, col)
-	if m.won > 0 {
+	v.Text(max(0, (v.W-len(line))/2), v.H-1, line, 250)
+
+	switch m.state {
+	case solved:
 		text := "SOLVED"
-		s := max(1, fitScale(text, v.W-4, area/3))
+		s := max(1, fitScale(text, v.W-4, area/4))
 		bw, bh := bannerSize(text, s)
-		drawBanner(v, text, (v.W-bw)/2, (area-bh)/2, s, '#', 214)
+		col := []uint8{226, 220, 214, 220}[int(t*8)%4]
+		drawBanner(v, text, (v.W-bw)/2, (area-bh)/2, s, '#', col)
+	case falling:
+		msg := " fell! back to the start "
+		v.Text((v.W-len(msg))/2, area/2, msg, 203)
 	}
 }
 
-// roll integrates the marble: tilt accelerates it, friction slows it, walls
-// bounce it, holes swallow it, the flag wins.
-func (m *maze) roll(gx, gy, dt, t float64) {
-	const accel = 3.0 // cells/s^2 per m/s^2 of tilt
-	const friction = 1.6
-	m.vx += (gx*accel - m.vx*friction) * dt
-	m.vy += (gy*accel/2 - m.vy*friction) * dt // rows are twice as tall
-	steps := int(math.Ceil(math.Max(math.Abs(m.vx), math.Abs(m.vy))*dt*4)) + 1
-	for i := 0; i < steps; i++ {
-		nx := m.x + m.vx*dt/float64(steps)
-		if m.solid(nx, m.y) {
-			m.vx = -m.vx * 0.35
-		} else {
-			m.x = nx
+// view holds what one frame's rendering needs.
+type view struct {
+	dx, dy float64 // parallax: a point at height z shows at xy - z*d
+	light  Vec3    // toward the light, board frame
+	eye    Vec3    // toward the viewer
+	bz, br float64 // ball center height and drawn radius
+	fog    float64 // ball dimming while it falls
+}
+
+// Ramps, dark to bright.
+var (
+	mzShade    = ".:-=+*#%@"
+	mzWood     = []uint8{52, 94, 94, 130, 136, 172, 179}
+	mzWall     = []uint8{58, 94, 137, 180, 223, 230, 231}
+	mzEdge     = []uint8{234, 52, 58, 94, 95}
+	mzBall     = []uint8{17, 18, 19, 25, 26, 32, 38, 75, 117, 153, 195}
+	mzStripe   = []uint8{52, 88, 124, 160, 196, 202, 209, 216, 223}
+	mzGoal     = []uint8{22, 28, 34, 40, 46, 83, 120, 157}
+	mzVoidStar = []uint8{234, 236, 238, 240}
+)
+
+func mzPick(ramp []uint8, i float64) uint8 {
+	return ramp[int(clamp01(i)*float64(len(ramp)-1)+0.5)]
+}
+
+func shadeChar(i float64) byte {
+	return mzShade[int(clamp01(i)*float64(len(mzShade)-1)+0.5)]
+}
+
+func (m *maze) render(v *View, area int, t float64) {
+	s := math.Min(float64(v.W)/(float64(m.cols)+0.3), 2*float64(area)/(float64(m.rows)+0.3))
+	ox := (float64(v.W) - float64(m.cols)*s) / 2
+	oy := (float64(area) - float64(m.rows)*s/2) / 2
+
+	u := m.up
+	uz := math.Max(u[2], 0.3)
+	var vw view
+	vw.dx, vw.dy = -parAmp*u[0]/uz, -parAmp*u[1]/uz
+	if l := math.Hypot(vw.dx, vw.dy); l > maxAmp {
+		vw.dx, vw.dy = vw.dx*maxAmp/l, vw.dy*maxAmp/l
+	}
+	// A lamp above and a little toward the top left of the board, fixed in
+	// the room, with the tilt exaggerated so the shading visibly follows it.
+	vw.light = Vec3{-0.35 + 1.8*u[0], -0.5 + 1.8*u[1], 1.0 * uz}.Norm()
+	vw.eye = Vec3{-vw.dx, -vw.dy, 1}.Norm()
+	depth := math.Max(0, -m.z)
+	vw.br = ballR / (1 + depth*0.5)
+	vw.bz = vw.br + m.z
+	vw.fog = 1 / (1 + depth*1.2)
+
+	parallelRows(area, func(y int) {
+		for x := 0; x < v.W; x++ {
+			qx := (float64(x) + 0.5 - ox) / s
+			qy := (float64(y) + 0.5 - oy) / (s / 2)
+			c, col := m.shade(qx, qy, &vw, t)
+			v.Set(x, y, c, col)
 		}
-		ny := m.y + m.vy*dt/float64(steps)
-		if m.solid(m.x, ny) {
-			m.vy = -m.vy * 0.35
-		} else {
-			m.y = ny
+	})
+}
+
+// shade renders the point of the board under screen position (qx, qy):
+// the highest thing along the view ray wins.
+func (m *maze) shade(qx, qy float64, vw *view, t float64) (byte, uint8) {
+	L := vw.light
+	list := m.near[m.cellAt(qx, qy)]
+	wz, wn, wok := m.wallHit(qx, qy, vw.dx, vw.dy, list)
+	bz, bn, bok := m.ballHit(qx, qy, vw)
+	if bok && (!wok || bz > wz) && bz >= 0 {
+		return m.ballColor(bn, vw)
+	}
+	if wok {
+		px, py := qx-wz*vw.dx, qy-wz*vw.dy
+		i := 0.2 + 0.8*math.Max(0, wn.Dot(L))
+		if wn[2] > 0.5 && m.ballShadow(px, py, wz, L) {
+			i *= 0.45
+		}
+		c := byte('#')
+		switch {
+		case wn[2] > 0.5:
+			c = "=+*#"[int(clamp01(i)*3.99)]
+		case wn[0] != 0:
+			c = '|'
+		default:
+			c = '='
+		}
+		return c, mzPick(mzWall, i)
+	}
+	if m.floorAt(qx, qy) {
+		i := 0.25 + 0.55*L[2]
+		shadow := m.ballShadow(qx, qy, 0, L)
+		if !shadow {
+			sx, sy := -L[0]/L[2], -L[1]/L[2]
+			_, _, shadow = m.wallHit(qx, qy, sx, sy, list)
+		}
+		if shadow {
+			i *= 0.35
+		}
+		// The goal's glow: rings running outward.
+		if d := math.Hypot(qx-m.goal[0], qy-m.goal[1]); d < goalR+0.35 {
+			w := 0.5 + 0.5*math.Cos((d-goalR)*18-t*6)
+			if m.state == solved {
+				w = 0.5 + 0.5*math.Cos(t*14)
+			}
+			return "..oO"[int(w*3.99)], mzPick(mzGoal, 0.3+0.7*w*(1-(d-goalR)/0.35))
+		}
+		// Planks: a seam every half cell and a faint grain.
+		c := byte('.')
+		if g := math.Mod(qy*2+0.25*math.Sin(qx*1.7), 1); g < 0.08 {
+			c = '_'
+		} else if math.Sin(qx*9+3*math.Sin(qy*2.3)) > 0.93 {
+			c = ','
+		}
+		return c, mzPick(mzWood, i)
+	}
+	// Void: the ball below the board, the board's cut edges, then the deep.
+	ez, en, eok := m.edgeHit(qx, qy, vw)
+	if bok && (!eok || bz > ez) {
+		c, col := m.ballColor(bn, vw)
+		return c, col
+	}
+	if eok {
+		i := 0.25 + 0.75*math.Max(0, en.Dot(L))
+		if math.Hypot(qx-ez*vw.dx-m.goal[0], qy-ez*vw.dy-m.goal[1]) < goalR+0.05 {
+			return '|', mzPick(mzGoal, i*0.7)
+		}
+		return ':', mzPick(mzEdge, i)
+	}
+	for k, d := range []float64{2, 5} {
+		sx, sy := qx+d*vw.dx, qy+d*vw.dy
+		h := hash2(int(math.Floor(sx*7)), int(math.Floor(sy*14)), k)
+		if h%53 == 0 {
+			return '.', mzVoidStar[(h>>8)%uint32(len(mzVoidStar))]
 		}
 	}
-	p := [2]int{int(m.x), int(m.y)}
-	if len(m.trail) == 0 || m.trail[len(m.trail)-1] != p {
-		m.trail = append(m.trail, p)
-		if len(m.trail) > 12 {
-			m.trail = m.trail[1:]
+	return ' ', 0
+}
+
+func hash2(x, y, k int) uint32 {
+	h := uint32(x)*0x8da6b343 ^ uint32(y)*0xd8163841 ^ uint32(k)*0xcb1ab31f
+	h ^= h >> 13
+	h *= 0x5bd1e995
+	return h ^ h>>15
+}
+
+// wallHit finds the highest point in [0, wallH] where the ray through
+// (qx, qy) - z*(dx, dy) is inside a wall, and that face's normal.
+func (m *maze) wallHit(qx, qy, dx, dy float64, list []int) (float64, Vec3, bool) {
+	best, ok := -1.0, false
+	var bn Vec3
+	for _, wi := range list {
+		b := m.walls[wi]
+		lo, hi := 0.0, wallH
+		n := Vec3{0, 0, 1}
+		// Along one axis the ray is at q - z*d; it is inside [a0, a1] for z
+		// between (q-a1)/d and (q-a0)/d.
+		slab := func(q, d, a0, a1 float64, neg, pos Vec3) bool {
+			if d == 0 {
+				return q >= a0 && q <= a1
+			}
+			z0, z1 := (q-a0)/d, (q-a1)/d // where it crosses a0, a1
+			f0, f1 := neg, pos
+			if z0 > z1 {
+				z0, z1, f0, f1 = z1, z0, f1, f0
+			}
+			// Entering from above means crossing at the upper z.
+			if z1 < hi {
+				hi, n = z1, f1
+			}
+			lo = math.Max(lo, z0)
+			return true
+		}
+		if !slab(qx, dx, b.x0, b.x1, Vec3{-1, 0, 0}, Vec3{1, 0, 0}) ||
+			!slab(qy, dy, b.y0, b.y1, Vec3{0, -1, 0}, Vec3{0, 1, 0}) || lo > hi {
+			continue
+		}
+		if hi > best {
+			best, bn, ok = hi, n, true
 		}
 	}
-	for _, hl := range m.holes {
-		if math.Hypot(m.x-hl[0], (m.y-hl[1])*2) < 0.9 {
-			m.fell = t
-			m.x, m.y = hl[0], hl[1]
-			return
-		}
+	return best, bn, ok
+}
+
+// ballHit intersects the view ray with the ball.
+func (m *maze) ballHit(qx, qy float64, vw *view) (float64, Vec3, bool) {
+	// Ray: (qx, qy, 0) + z*(-dx, -dy, 1).
+	d := Vec3{-vw.dx, -vw.dy, 1}
+	o := Vec3{qx - m.x, qy - m.y, -vw.bz}
+	a, b, c := d.Dot(d), 2*d.Dot(o), o.Dot(o)-vw.br*vw.br
+	disc := b*b - 4*a*c
+	if disc < 0 {
+		return 0, Vec3{}, false
 	}
-	if math.Hypot(m.x-m.goal[0], (m.y-m.goal[1])*2) < 1.2 {
-		m.won = t
-		if run := t - m.began; m.best == 0 || run < m.best {
-			m.best = run
-		}
+	z := (-b + math.Sqrt(disc)) / (2 * a)
+	p := o.Add(d.Scale(z))
+	return z, p.Scale(1 / vw.br), true
+}
+
+// ballShadow reports whether the ball blocks the light at (x, y, z).
+func (m *maze) ballShadow(x, y, z float64, L Vec3) bool {
+	if m.z < 0 {
+		return false
 	}
+	o := Vec3{x - m.x, y - m.y, z - ballR}
+	b := o.Dot(L)
+	c := o.Dot(o) - ballR*ballR
+	return b < 0 && b*b-c > 0
+}
+
+// edgeHit finds where the view ray, going below the board surface through
+// the void, meets the board's cut side.
+func (m *maze) edgeHit(qx, qy float64, vw *view) (float64, Vec3, bool) {
+	if vw.dx == 0 && vw.dy == 0 {
+		return 0, Vec3{}, false
+	}
+	const steps = 8
+	for k := 1; k <= steps; k++ {
+		z := -slabT * float64(k) / steps
+		px, py := qx-z*vw.dx, qy-z*vw.dy
+		if !m.floorAt(px, py) {
+			continue
+		}
+		// The face toward the viewer: a circle's inside in holes and the
+		// goal, otherwise whichever axis side is open toward the eye.
+		for _, h := range append(m.holes, m.goal) {
+			if dh := math.Hypot(px-h[0], py-h[1]); dh < goalR+0.05 {
+				return z, Vec3{(h[0] - px) / dh, (h[1] - py) / dh, 0}, true
+			}
+		}
+		sx, sy := math.Copysign(0.03, vw.dx), math.Copysign(0.03, vw.dy)
+		openX, openY := !m.floorAt(px-sx, py), !m.floorAt(px, py-sy)
+		if openX && (!openY || math.Abs(vw.dx) > math.Abs(vw.dy)) {
+			return z, Vec3{-math.Copysign(1, vw.dx), 0, 0}, true
+		}
+		return z, Vec3{0, -math.Copysign(1, vw.dy), 0}, true
+	}
+	return 0, Vec3{}, false
+}
+
+// ballColor shades the ball: diffuse and a sharp highlight from the lamp, a
+// hint of the bright room reflected on top, and a stripe that turns as it
+// rolls.
+func (m *maze) ballColor(n Vec3, vw *view) (byte, uint8) {
+	L, E := vw.light, vw.eye
+	diff := math.Max(0, n.Dot(L))
+	h := L.Add(E).Norm()
+	spec := math.Pow(math.Max(0, n.Dot(h)), 50)
+	if spec > 0.5 && vw.fog > 0.9 {
+		return '@', 231
+	}
+	r := E.Scale(-1).Add(n.Scale(2 * n.Dot(E)))
+	env := 0.5 + 0.5*r[2]
+	i := (0.08 + 0.7*diff + 0.25*env*env + 0.6*spec) * vw.fog
+	local := m.rot.T().Apply(n)
+	ramp := mzBall
+	if math.Abs(local[2]) < 0.3 || math.Abs(local[0]) > 0.93 {
+		ramp = mzStripe
+	}
+	return shadeChar(0.12 + 0.88*i), mzPick(ramp, i)
 }
