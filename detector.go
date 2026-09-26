@@ -43,15 +43,15 @@ func (d *detector) Setup(ss *Streams) ([]*Gauge, error) {
 
 func (d *detector) Help() []string {
 	return []string{
-		"Hold the phone away from metal and press c to zero it, then sweep it slowly over a wall, a desk or an object.",
+		"Hold the phone away from metal and press z to zero it, then sweep it slowly over a wall, a desk or an object.",
 		"The needle and the pings respond to the field bending around steel (studs, screws, pipes) and magnets (speakers, headphones, bike trainers). The sensor sits near the top of the phone.",
-		"c  zero here    b  vibrate on strong signals (Termux bell)",
+		"z  zero here    b  vibrate on strong signals (Termux bell)",
 	}
 }
 
 func (d *detector) Key(k byte) {
 	switch k {
-	case 'c':
+	case 'z':
 		d.hasBase = false
 	case 'b':
 		d.beep = !d.beep
