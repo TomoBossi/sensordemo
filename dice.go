@@ -42,6 +42,11 @@ type dice struct {
 	throw  bool
 	since  float64 // time of the last result, for its entrance
 	err    string
+	light  Vec3 // toward the lamp, which the phone's turning moves
+	rot    Mat3 // resting orientation, which slowly follows the phone
+	hasRot bool
+	fw, fd float64 // floor half extents the screen shows
+	eyeY   float64
 }
 
 type die struct {
@@ -70,11 +75,11 @@ type dieKind struct {
 }
 
 const (
-	diceG      = 500.0 // gravity, units/s^2 (a slow-motion half of real)
+	diceG      = 320.0 // gravity, units/s^2: a third of real, for dice that seem their size
 	diceLid    = 7.0   // the glass lid's height
 	diceWall   = 2.2   // the tray walls' height
-	diceShake  = 55.0  // units/s^2 per m/s^2 of the phone's shake
-	diceTilt   = 45.0  // units/s^2 per m/s^2 of tilt
+	diceShake  = 40.0  // units/s^2 per m/s^2 of the phone's shake
+	diceTilt   = 32.0  // units/s^2 per m/s^2 of tilt
 	diceSteps  = 10    // physics substeps per frame
 	diceMaxDie = 12
 )
@@ -97,6 +102,8 @@ func (d *dice) Setup(ss *Streams) ([]*Gauge, error) {
 			return nil, err
 		}
 	}
+	ss.Subscribe("game_rotation_vector", 30) // optional: turning moves the light
+	d.light = diceLight
 	lin, err := ss.Subscribe("linear_acceleration", 60)
 	if err != nil {
 		return nil, err
@@ -334,6 +341,17 @@ func (d *dice) layout(w, h int) {
 		}
 		d.throwAll()
 	}
+	// What the screen shows: the rim's top in a band of the same visual
+	// thickness on every side (a row is two columns tall), at least two
+	// rows. Seen from above, the rim is magnified by k.
+	tc := math.Max(4, math.Round(0.06*float64(w))) // rim, in columns
+	mx, mz := tc/(float64(w)/2), (tc/2)/(float64(h)/2)
+	d.eyeY = 2.3 * math.Max(d.W, d.D) * 1.2
+	for it := 0; it < 3; it++ {
+		k := d.eyeY / (d.eyeY - diceWall)
+		d.fw, d.fd = d.W*k/(1-mx), d.D*k/(1-mz)
+		d.eyeY = 2.3 * math.Max(d.fw, d.fd)
+	}
 	for i := range d.dice { // keep them inside a resized tray
 		p := &d.dice[i].p
 		p[0] = math.Max(-d.W+1.3, math.Min(d.W-1.3, p[0]))
@@ -346,8 +364,8 @@ func (d *dice) throwAll() {
 	for i := range d.dice {
 		dd := &d.dice[i]
 		dd.p = Vec3{(d.rng.Float64()*2 - 1) * (d.W - 1.5), 3 + 2.5*d.rng.Float64(), (d.rng.Float64()*2 - 1) * (d.D - 1.5)}
-		dd.v = Vec3{(d.rng.Float64()*2 - 1) * 25, 5 + 10*d.rng.Float64(), (d.rng.Float64()*2 - 1) * 25}
-		dd.w = Vec3{(d.rng.Float64()*2 - 1) * 30, (d.rng.Float64()*2 - 1) * 30, (d.rng.Float64()*2 - 1) * 30}
+		dd.v = Vec3{(d.rng.Float64()*2 - 1) * 20, 4 + 8*d.rng.Float64(), (d.rng.Float64()*2 - 1) * 20}
+		dd.w = Vec3{(d.rng.Float64()*2 - 1) * 22, (d.rng.Float64()*2 - 1) * 22, (d.rng.Float64()*2 - 1) * 22}
 		dd.R = rotAxis(Vec3{d.rng.NormFloat64(), d.rng.NormFloat64(), d.rng.NormFloat64()}.Norm(), d.rng.Float64()*6.3)
 		dd.asleep, dd.sleep = false, 0
 	}
@@ -384,6 +402,7 @@ func (d *dice) Draw(v *View, ss *Streams, t, dt float64) {
 		d.rest[1] += (a[1] - d.rest[1]) * k
 		acc = acc.Add(Vec3{-(a[0] - d.rest[0]), 0, a[1] - d.rest[1]}.Scale(diceTilt))
 	}
+	d.moveLight(ss, dt)
 	if d.throw {
 		d.throw = false
 		d.throwAll()
@@ -434,6 +453,41 @@ func (dd *die) flat() bool {
 	return false
 }
 
+// moveLight keeps the lamp fixed in the room while the phone turns, as in
+// the eye demo, and eases it toward a limit 65 degrees from overhead, so
+// it never goes behind the tray's walls. The resting orientation follows
+// the phone over a few seconds, bringing the light home.
+func (d *dice) moveLight(ss *Streams, dt float64) {
+	s := ss.Get("game_rotation_vector")
+	if s == nil {
+		return
+	}
+	r := s.Read()
+	R, ok := FromRotationVector(r.V)
+	if !r.OK || !ok {
+		return
+	}
+	if !d.hasRot {
+		d.rot, d.hasRot = R, true
+	}
+	d.rot = blendRotation(d.rot, R, math.Min(1, dt/5))
+	sf := screenFrame(ss)
+	toScreen := func(t Vec3) Vec3 { return Vec3{t[0], -t[2], t[1]} } // tray to screen
+	base := toScreen(diceLight)
+	now := sf.T().Apply(R.T().Apply(d.rot.Apply(sf.Apply(base))))
+	now = base.Add(now.Sub(base).Scale(0.8)).Norm() // most of the way
+	t := Vec3{now[0], now[2], -now[1]}              // back to the tray
+	// Soft limit on the angle from overhead.
+	const lim = 65 * math.Pi / 180
+	th := math.Acos(math.Max(-1, math.Min(1, t[1])))
+	th2 := lim * math.Tanh(th/lim)
+	if xz := math.Hypot(t[0], t[2]); xz > 1e-9 {
+		k := math.Sin(th2) / xz
+		t = Vec3{t[0] * k, math.Cos(th2), t[2] * k}
+	}
+	d.light = t
+}
+
 // value reads the die: the face pointing up (a d4: the corner).
 func (dd *die) value() int {
 	k := dd.k
@@ -472,7 +526,7 @@ func (d *dice) physics(acc Vec3, h float64) {
 			dd.R = rotAxis(dd.w.Scale(1/wl), wl*h).Mul(dd.R)
 		}
 		dd.v = dd.v.Scale(1 - 0.05*h)
-		dd.w = dd.w.Scale(1 - 0.3*h)
+		dd.w = dd.w.Scale(1 - 0.1*h)
 	}
 	// The tray: floor, lid and walls, as planes n.x >= off.
 	planes := []struct {
@@ -480,12 +534,12 @@ func (d *dice) physics(acc Vec3, h float64) {
 		off float64
 		e   float64
 	}{
-		{Vec3{0, 1, 0}, 0, 0.3},
+		{Vec3{0, 1, 0}, 0, 0.4},
 		{Vec3{0, -1, 0}, -diceLid, 0.3},
-		{Vec3{1, 0, 0}, -d.W, 0.45},
-		{Vec3{-1, 0, 0}, -d.W, 0.45},
-		{Vec3{0, 0, 1}, -d.D, 0.45},
-		{Vec3{0, 0, -1}, -d.D, 0.45},
+		{Vec3{1, 0, 0}, -d.W, 0.5},
+		{Vec3{-1, 0, 0}, -d.W, 0.5},
+		{Vec3{0, 0, 1}, -d.D, 0.5},
+		{Vec3{0, 0, -1}, -d.D, 0.5},
 	}
 	for i := range d.dice {
 		dd := &d.dice[i]
@@ -516,15 +570,21 @@ func (d *dice) physics(acc Vec3, h float64) {
 		touching := len(cs) > 0
 		for pass := 0; pass < 4; pass++ {
 			for _, c := range cs {
-				dd.impulse(c.r, c.n, c.e, 0.4)
+				dd.impulse(c.r, c.n, c.e, 0.25)
 			}
 		}
 		for pi, pl := range planes {
 			dd.p = dd.p.Add(pl.n.Scale(push[pi] * 0.8))
 		}
 		if touching { // rolling resistance and felt drag
-			dd.w = dd.w.Scale(math.Max(0, 1-2.5*h))
-			dd.v = dd.v.Scale(math.Max(0, 1-0.8*h))
+			dd.w = dd.w.Scale(math.Max(0, 1-1.0*h))
+			dd.v = dd.v.Scale(math.Max(0, 1-0.3*h))
+			// Lying flat on a face and slow, felt holds it (static
+			// friction): it stops instead of creeping.
+			if dd.v.Len() < 2 && dd.w.Len() < 2.5 && dd.flat() {
+				k := math.Exp(-10 * h)
+				dd.v, dd.w = dd.v.Scale(k), dd.w.Scale(k)
+			}
 		}
 		// Rest: slow, touching and lying on a face for a moment, it sleeps
 		// until disturbed. (Not on an edge: it would tip over.)

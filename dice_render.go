@@ -22,8 +22,8 @@ var diceColors = []struct {
 }
 
 var (
-	diceFelt  = []uint8{22, 22, 22, 28, 28, 29, 35}
-	diceLight = Vec3{-0.45, 1, -0.55}.Norm() // above, from the top left
+	diceFelt  = []uint8{232, 233, 22, 22, 28, 29, 34, 35, 71} // shadows reach near black
+	diceLight = Vec3{-0.3, 1, -0.62}.Norm()                   // above, from the top, a little left
 )
 
 // digitFont is a 3x5 font for the numbers on the faces.
@@ -113,9 +113,8 @@ func (d *dice) cast(o, dir Vec3) (float64, int, int) {
 }
 
 func (d *dice) render(v *View, area int) {
-	const rim = 1.1 // the tray's wooden rim, beyond its walls
-	fw, fd := d.W+rim, d.D+rim
-	eye := Vec3{0, 2.3 * math.Max(fw, fd), 0}
+	fw, fd := d.fw, d.fd
+	eye := Vec3{0, d.eyeY, 0}
 	parallelRows(area, func(y int) {
 		for x := 0; x < v.W; x++ {
 			u := (float64(x)+0.5)/float64(v.W)*2 - 1
@@ -129,7 +128,7 @@ func (d *dice) render(v *View, area int) {
 }
 
 func (d *dice) shadePixel(eye, dir Vec3, px, py int) (byte, uint8) {
-	L := diceLight
+	L := d.light
 	if t, i, f := d.cast(eye, dir); i >= 0 {
 		return d.shadeDie(&d.dice[i], f, eye.Add(dir.Scale(t)), dir)
 	}
@@ -137,20 +136,28 @@ func (d *dice) shadePixel(eye, dir Vec3, px, py int) (byte, uint8) {
 	tf := -eye[1] / dir[1]
 	fp := eye.Add(dir.Scale(tf))
 	if math.Abs(fp[0]) <= d.W && math.Abs(fp[2]) <= d.D {
-		shade := 0.35 + 0.5*L[1]
+		shade := 0.35 + 0.55*L[1]
+		shadow := false
 		if _, i, _ := d.cast(fp.Add(Vec3{0, 0.01, 0}), L); i >= 0 {
-			shade *= 0.45 // a die's shadow
+			shadow = true // a die's
 		}
-		// The walls shade the felt next to them from the light.
-		if fp[0]-(-d.W) < diceWall*(-L[0])/L[1] || fp[2]-(-d.D) < diceWall*(-L[2])/L[1] {
-			shade *= 0.7
+		// The walls between the felt and the lamp shade it: how far a
+		// wall's shadow reaches is its height times the light's slant.
+		reachX, reachZ := diceWall*math.Abs(L[0])/L[1], diceWall*math.Abs(L[2])/L[1]
+		if L[0] < 0 && fp[0]+d.W < reachX || L[0] > 0 && d.W-fp[0] < reachX ||
+			L[2] < 0 && fp[2]+d.D < reachZ || L[2] > 0 && d.D-fp[2] < reachZ {
+			shadow = true
 		}
 		n := noise3(fp[0]*1.7, fp[2]*1.7, 0)
 		ch := byte(':')
 		if n < 0 {
 			ch = '.'
 		}
-		return ch, mzPick(diceFelt, shade+0.08*n)
+		if shadow {
+			shade *= 0.3
+			ch = '.'
+		}
+		return ch, mzPick(diceFelt, shade+0.06*n)
 	}
 	// Which wall face or rim top the ray meets first.
 	best, bn := math.Inf(1), Vec3{0, 1, 0}
@@ -172,7 +179,10 @@ func (d *dice) shadePixel(eye, dir Vec3, px, py int) (byte, uint8) {
 	try((diceWall-eye[1])/dir[1], Vec3{0, 1, 0}, func(p Vec3) bool {
 		return math.Abs(p[0]) > d.W || math.Abs(p[2]) > d.D
 	})
-	i := 0.15 + 0.7*math.Max(0, bn.Dot(L))
+	// A fill from the lower right tells the two walls away from the lamp
+	// apart.
+	fill := Vec3{0.8, 0.35, 0.25}.Norm()
+	i := 0.1 + 0.75*math.Max(0, bn.Dot(L)) + 0.25*math.Max(0, bn.Dot(fill))
 	if bn[1] > 0.5 {
 		i += 0.1 // the rim's top catches the light
 	}
@@ -186,7 +196,7 @@ func (d *dice) shadeDie(dd *die, f int, p, dir Vec3) (byte, uint8) {
 	k := dd.k
 	local := dd.R.T().Apply(p.Sub(dd.p))
 	n := dd.R.Apply(k.n[f])
-	L := diceLight
+	L := d.light
 	eyeDir := dir.Scale(-1)
 	diff := math.Max(0, n.Dot(L))
 	spec := math.Pow(math.Max(0, n.Dot(L.Add(eyeDir).Norm())), 30)
