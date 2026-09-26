@@ -23,7 +23,7 @@ var diceColors = []struct {
 
 var (
 	diceFelt  = []uint8{232, 233, 22, 22, 28, 29, 34, 35, 71} // shadows reach near black
-	diceLight = Vec3{-0.3, 1, -0.62}.Norm()                   // above, from the top, a little left
+	diceLight = Vec3{-0.5, 1, -0.55}.Norm()                   // above, from the top left corner
 )
 
 // digitFont is a 3x5 font for the numbers on the faces.

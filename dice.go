@@ -42,9 +42,7 @@ type dice struct {
 	throw  bool
 	since  float64 // time of the last result, for its entrance
 	err    string
-	light  Vec3 // toward the lamp, which the phone's turning moves
-	rot    Mat3 // resting orientation, which slowly follows the phone
-	hasRot bool
+	light  Vec3    // toward the lamp
 	fw, fd float64 // floor half extents the screen shows
 	eyeY   float64
 }
@@ -81,6 +79,7 @@ const (
 	diceShake  = 40.0  // units/s^2 per m/s^2 of the phone's shake
 	diceTilt   = 32.0  // units/s^2 per m/s^2 of tilt
 	diceSteps  = 10    // physics substeps per frame
+	diceSlow   = 0.65  // the dice's time runs at this pace: livelier to watch
 	diceMaxDie = 12
 )
 
@@ -102,7 +101,6 @@ func (d *dice) Setup(ss *Streams) ([]*Gauge, error) {
 			return nil, err
 		}
 	}
-	ss.Subscribe("game_rotation_vector", 30) // optional: turning moves the light
 	d.light = diceLight
 	lin, err := ss.Subscribe("linear_acceleration", 60)
 	if err != nil {
@@ -402,7 +400,6 @@ func (d *dice) Draw(v *View, ss *Streams, t, dt float64) {
 		d.rest[1] += (a[1] - d.rest[1]) * k
 		acc = acc.Add(Vec3{-(a[0] - d.rest[0]), 0, a[1] - d.rest[1]}.Scale(diceTilt))
 	}
-	d.moveLight(ss, dt)
 	if d.throw {
 		d.throw = false
 		d.throwAll()
@@ -414,7 +411,7 @@ func (d *dice) Draw(v *View, ss *Streams, t, dt float64) {
 		}
 		d.result = nil
 	}
-	h := dt / diceSteps
+	h := dt * diceSlow / diceSteps
 	for s := 0; s < diceSteps; s++ {
 		d.physics(acc, h)
 	}
@@ -451,41 +448,6 @@ func (dd *die) flat() bool {
 		}
 	}
 	return false
-}
-
-// moveLight keeps the lamp fixed in the room while the phone turns, as in
-// the eye demo, and eases it toward a limit 65 degrees from overhead, so
-// it never goes behind the tray's walls. The resting orientation follows
-// the phone over a few seconds, bringing the light home.
-func (d *dice) moveLight(ss *Streams, dt float64) {
-	s := ss.Get("game_rotation_vector")
-	if s == nil {
-		return
-	}
-	r := s.Read()
-	R, ok := FromRotationVector(r.V)
-	if !r.OK || !ok {
-		return
-	}
-	if !d.hasRot {
-		d.rot, d.hasRot = R, true
-	}
-	d.rot = blendRotation(d.rot, R, math.Min(1, dt/5))
-	sf := screenFrame(ss)
-	toScreen := func(t Vec3) Vec3 { return Vec3{t[0], -t[2], t[1]} } // tray to screen
-	base := toScreen(diceLight)
-	now := sf.T().Apply(R.T().Apply(d.rot.Apply(sf.Apply(base))))
-	now = base.Add(now.Sub(base).Scale(0.8)).Norm() // most of the way
-	t := Vec3{now[0], now[2], -now[1]}              // back to the tray
-	// Soft limit on the angle from overhead.
-	const lim = 65 * math.Pi / 180
-	th := math.Acos(math.Max(-1, math.Min(1, t[1])))
-	th2 := lim * math.Tanh(th/lim)
-	if xz := math.Hypot(t[0], t[2]); xz > 1e-9 {
-		k := math.Sin(th2) / xz
-		t = Vec3{t[0] * k, math.Cos(th2), t[2] * k}
-	}
-	d.light = t
 }
 
 // value reads the die: the face pointing up (a d4: the corner).
