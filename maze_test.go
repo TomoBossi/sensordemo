@@ -25,7 +25,7 @@ func TestMazeNoTunneling(t *testing.T) {
 			if i%40 == 0 {
 				ax, ay = rng.Float64()*8-4, rng.Float64()*8-4
 			}
-			m.step(ax, ay, 1.0/30)
+			m.step(ax, ay, 1.0/30, float64(i))
 			for _, b := range m.walls {
 				cx, cy := math.Max(b.x0, math.Min(m.x, b.x1)), math.Max(b.y0, math.Min(m.y, b.y1))
 				if d := math.Hypot(m.x-cx, m.y-cy); d < ballR-1e-6 {
@@ -44,7 +44,7 @@ func TestMazeRestsAgainstWall(t *testing.T) {
 	m := testMaze(1, 3)
 	m.cells[0].open = [4]bool{} // box the start in (walls only matter by list)
 	for i := 0; i < 300; i++ {
-		m.step(-3, 0, 1.0/30) // tilted left: the border wall
+		m.step(-3, 0, 1.0/30, 0) // tilted left: the border wall
 	}
 	if want := wallT/2 + ballR; math.Abs(m.x-want) > 0.01 || math.Hypot(m.vx, m.vy) > 0.05 {
 		t.Fatalf("ball at x=%.3f v=%.3f,%.3f; want at rest at x=%.3f", m.x, m.vx, m.vy, want)
@@ -82,8 +82,7 @@ func TestMazeFallsOffBridge(t *testing.T) {
 		ax, ay = 3, 0
 	}
 	for i := 0; i < 90 && m.state == rolling; i++ {
-		m.step(ax, ay, 1.0/30)
-		m.check(float64(i))
+		m.step(ax, ay, 1.0/30, float64(i))
 	}
 	if m.state != falling {
 		t.Fatalf("still %d at %.2f,%.2f", m.state, m.x, m.y)

@@ -71,11 +71,11 @@ const (
 	wallH   = 0.3  // wall height
 	ballR   = 0.27 // ball radius
 	slabT   = 0.35 // board thickness, seen at bridge edges and in holes
-	holeR   = 0.26
-	goalR   = 0.3
-	tiltK   = 8.0 // cells/s^2 per m/s^2 of downhill gravity
-	maxAmp  = 1.3 // cap on the parallax shift per unit of height
-	parAmp  = 2.2 // parallax exaggeration: real would be 1
+	holeR   = 0.31
+	goalR   = 0.33
+	tiltK   = 2.6 // cells/s^2 per m/s^2 of downhill gravity
+	maxAmp  = 0.7 // cap on the parallax shift per unit of height
+	parAmp  = 1.4 // parallax exaggeration: real would be 1
 	fallDur = 1.3
 	winDur  = 3.5
 )
@@ -307,28 +307,39 @@ func (m *maze) floorAt(x, y float64) bool {
 
 // step integrates the rolling ball for dt under a downhill acceleration
 // (ax, ay) in m/s^2, and returns the hardest impact speed.
-func (m *maze) step(ax, ay, dt float64) float64 {
+func (m *maze) step(ax, ay, dt, t float64) float64 {
 	// Small fixed substeps: one step's worth of tilt stays below the bounce
 	// threshold, so a ball held against a wall rests instead of chattering,
-	// and a fast ball moves less than its radius between wall checks.
+	// and holes and edges are checked often enough that a fast ball can't
+	// skip over them.
 	n := int(math.Ceil(dt / 0.004))
 	h := dt / float64(n)
 	impact := 0.0
-	for i := 0; i < n; i++ {
-		m.vx += ax * tiltK * h
-		m.vy += ay * tiltK * h
-		// Rolling resistance and a little drag, capped speed.
+	for i := 0; i < n && m.state == rolling; i++ {
+		gx, gy := ax*tiltK, ay*tiltK
+		// Near a hole the ball starts to dip over its lip and is drawn in.
+		for _, c := range append(m.holes, m.goal) {
+			dx, dy := c[0]-m.x, c[1]-m.y
+			if d := math.Hypot(dx, dy); d > 1e-6 && d < holeR+ballR*0.5 {
+				gx, gy = gx+3*dx/d, gy+3*dy/d
+			}
+		}
+		m.vx += gx * h
+		m.vy += gy * h
+		// Rolling resistance and a little drag, capped speed: a heavy ball
+		// that keeps its momentum.
 		sp := math.Hypot(m.vx, m.vy)
-		if dec := (0.4 + 0.25*sp) * h; sp <= dec {
+		if dec := (0.15 + 0.06*sp) * h; sp <= dec {
 			m.vx, m.vy = 0, 0
 		} else {
-			f := math.Min(sp-dec, 12) / sp
+			f := math.Min(sp-dec, 7) / sp
 			m.vx, m.vy = m.vx*f, m.vy*f
 		}
 		m.x += m.vx * h
 		m.y += m.vy * h
 		impact = math.Max(impact, m.collide())
 		m.roll(h)
+		m.check(t)
 	}
 	return impact
 }
@@ -364,13 +375,13 @@ func (m *maze) collide() float64 {
 		m.x += nx * (ballR - d)
 		m.y += ny * (ballR - d)
 		if vn := m.vx*nx + m.vy*ny; vn < 0 {
-			e := 0.3 // a little bounce; none for gentle touches, so it rests
-			if -vn < 0.5 {
+			e := 0.5 // a bounce; none for gentle touches, so it rests
+			if -vn < 0.25 {
 				e = 0
 			}
 			m.vx -= (1 + e) * vn * nx
 			m.vy -= (1 + e) * vn * ny
-			m.vx, m.vy = m.vx*0.97, m.vy*0.97 // scrubbing against the wall
+			m.vx, m.vy = m.vx*0.98, m.vy*0.98 // scrubbing against the wall
 			impact = math.Max(impact, -vn)
 		}
 	}
@@ -469,11 +480,10 @@ func (m *maze) Draw(v *View, ss *Streams, t, dt float64) {
 
 	switch m.state {
 	case rolling:
-		if imp := m.step(-a[0], a[1], dt); imp > 2.5 && m.beep && m.out != nil && t-m.lastBeep > 0.15 {
+		if imp := m.step(-a[0], a[1], dt, t); imp > 1.5 && m.beep && m.out != nil && t-m.lastBeep > 0.15 {
 			m.out.Write([]byte("\a"))
 			m.lastBeep = t
 		}
-		m.check(t)
 	case falling:
 		m.drop(dt)
 		if t-m.since > fallDur {
@@ -554,7 +564,7 @@ func (m *maze) render(v *View, area int, t float64) {
 	u := m.up
 	uz := math.Max(u[2], 0.3)
 	var vw view
-	vw.dx, vw.dy = -parAmp*u[0]/uz, -parAmp*u[1]/uz
+	vw.dx, vw.dy = -parAmp*u[0], -parAmp*u[1]
 	if l := math.Hypot(vw.dx, vw.dy); l > maxAmp {
 		vw.dx, vw.dy = vw.dx*maxAmp/l, vw.dy*maxAmp/l
 	}
@@ -622,6 +632,13 @@ func (m *maze) shade(qx, qy float64, vw *view, t float64) (byte, uint8) {
 			}
 			return "..oO"[int(w*3.99)], mzPick(mzGoal, 0.3+0.7*w*(1-(d-goalR)/0.35))
 		}
+		// A dark lip around holes.
+		for _, c := range m.holes {
+			if d := math.Hypot(qx-c[0], qy-c[1]); d < holeR+0.1 {
+				n := Vec3{(qx - c[0]) / d, (qy - c[1]) / d, 0}
+				return 'o', mzPick(mzWood, 0.15+0.35*math.Max(0, -n.Dot(L))*(i/0.8))
+			}
+		}
 		// Planks: a seam every half cell and a faint grain.
 		c := byte('.')
 		if g := math.Mod(qy*2+0.25*math.Sin(qx*1.7), 1); g < 0.08 {
@@ -643,6 +660,27 @@ func (m *maze) shade(qx, qy float64, vw *view, t float64) (byte, uint8) {
 			return '|', mzPick(mzGoal, i*0.7)
 		}
 		return ':', mzPick(mzEdge, i)
+	}
+	for gi, c := range append(m.holes, m.goal) {
+		r := holeR
+		goal := gi == len(m.holes)
+		if goal {
+			r = goalR
+		}
+		if d := math.Hypot(qx-c[0], qy-c[1]); d < r {
+			// Seen from straight above, the inner wall shows all around;
+			// tilted, edgeHit shows the far side and the near side hides.
+			fade := 1 - math.Hypot(vw.dx, vw.dy)/0.25
+			if d < r*0.55 || fade <= 0 {
+				return ' ', 0
+			}
+			n := Vec3{(c[0] - qx) / d, (c[1] - qy) / d, 0}
+			i := (0.2 + 0.7*math.Max(0, n.Dot(L))) * fade
+			if goal {
+				return ':', mzPick(mzGoal, i*0.7)
+			}
+			return ':', mzPick(mzEdge, i)
+		}
 	}
 	for k, d := range []float64{2, 5} {
 		sx, sy := qx+d*vw.dx, qy+d*vw.dy
@@ -699,19 +737,22 @@ func (m *maze) wallHit(qx, qy, dx, dy float64, list []int) (float64, Vec3, bool)
 	return best, bn, ok
 }
 
-// ballHit intersects the view ray with the ball.
+// ballHit finds the ball under screen position (qx, qy). It is drawn as a
+// circle around where its center appears, shaded as seen along the view
+// direction: the sheared projection that shows the walls' sides would
+// stretch it into an ellipse. It returns the height of the surface point.
 func (m *maze) ballHit(qx, qy float64, vw *view) (float64, Vec3, bool) {
-	// Ray: (qx, qy, 0) + z*(-dx, -dy, 1).
-	d := Vec3{-vw.dx, -vw.dy, 1}
-	o := Vec3{qx - m.x, qy - m.y, -vw.bz}
-	a, b, c := d.Dot(d), 2*d.Dot(o), o.Dot(o)-vw.br*vw.br
-	disc := b*b - 4*a*c
-	if disc < 0 {
+	u := (qx - m.x - vw.bz*vw.dx) / vw.br
+	w := (qy - m.y - vw.bz*vw.dy) / vw.br
+	r2 := u*u + w*w
+	if r2 >= 1 {
 		return 0, Vec3{}, false
 	}
-	z := (-b + math.Sqrt(disc)) / (2 * a)
-	p := o.Add(d.Scale(z))
-	return z, p.Scale(1 / vw.br), true
+	E := vw.eye
+	X := Vec3{1, 0, 0}.Sub(E.Scale(E[0])).Norm()
+	Y := E.Cross(X)
+	n := X.Scale(u).Add(Y.Scale(w)).Add(E.Scale(math.Sqrt(1 - r2)))
+	return vw.bz + vw.br*n[2], n, true
 }
 
 // ballShadow reports whether the ball blocks the light at (x, y, z).
