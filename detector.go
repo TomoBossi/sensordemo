@@ -27,9 +27,17 @@ func init() {
 // speaker and vibration motor magnets.
 //
 // Zeroing works like a scale's tare: it averages the field for a moment
-// while you hold still, measuring the noise too. Changes within the noise
-// read as zero, and the dial starts just above the noise, so it's as
-// sensitive as the spot allows, and widens when bigger readings arrive.
+// once the phone is still, measuring the noise too. Changes within the
+// noise read as zero. The dial's range follows the last few seconds: it
+// widens at once for a big reading and eases back after, down to just above
+// the noise. The zero also follows lasting shifts slowly (like a real
+// detector's auto-tune), so an offset left behind fades within a minute
+// while a sweep over something still shows in full.
+//
+// A strong magnet can magnetize parts of the phone or throw off Android's
+// compass calibration. Then the field in the air reads far from Earth's
+// (20-70 uT), and turning the phone changes the reading by itself; the demo
+// says so and asks for the figure 8 that recalibrates it.
 type detector struct {
 	base      float64 // zero, uT
 	noise     float64 // spread of the field while zeroing, uT
@@ -37,8 +45,13 @@ type detector struct {
 	zeroing   float64 // seconds of zeroing left; 0 = done
 	sum, sum2 float64
 	n         int
-	scale     float64 // full scale of the dial, uT; only grows until the next zero
+	minScale  float64 // the dial's smallest range, just above the noise
+	peak      float64 // biggest recent deviation, uT
+	peakT     float64 // when it was seen
+	scale     float64 // full scale of the dial, uT
 	shown     float64 // the scale drawn, easing toward scale
+	calm      float64 // seconds the phone has held still while zeroing
+	accuracy  float64 // Android's calibration status, 0..3 (-1 unknown)
 	needle    float64 // smoothed dial position 0..1
 	dev       float64 // smoothed deviation beyond the noise, uT (signed)
 	hist      []float64
@@ -48,7 +61,12 @@ type detector struct {
 	out       interface{ Write([]byte) (int, error) }
 }
 
-const zeroTime = 0.6 // seconds
+const (
+	zeroTime  = 0.6  // seconds of stillness a zero averages
+	zeroStill = 1.5  // uT: more spread than this is movement, not noise
+	maxBand   = 3.0  // uT: the widest noise band a zero may set
+	autoZero  = 12.0 // seconds for the zero to follow a lasting shift
+)
 
 func (d *detector) Setup(ss *Streams) ([]*Gauge, error) {
 	st, err := ss.Subscribe("magnetic_field", 0)
@@ -62,7 +80,8 @@ func (d *detector) Setup(ss *Streams) ([]*Gauge, error) {
 func (d *detector) Help() []string {
 	return []string{
 		"Hold the phone still and press z to zero it, then sweep it slowly over a wall, a desk or an object. The sensor sits near the top of the phone.",
-		"Zeroing is a tare: the dial and the chart start at the field where you zeroed, noise there reads as zero, and the scale starts small and widens for bigger readings. Zero far from metal to find faint things; zero next to something to ignore it.",
+		"Zeroing is a tare: the dial and the chart start at the field where you zeroed, and noise there reads as zero. The scale widens for a big reading and eases back after. Zero far from metal to find faint things; zero next to something to ignore it. The zero slowly follows lasting changes, so leftovers fade.",
+		"If it says the compass is off (after a strong magnet, say), wave the phone in a figure 8 until it clears, then press z.",
 		"It finds iron, steel and nickel, and magnets: it can't tell them apart, since both bend the magnetic field. Aluminum, copper, brass, gold and silver don't show. Steel touching the phone reads very strong, magnetized by the phone's own magnets.",
 		"z  zero here    b  vibrate on strong signals (Termux bell)",
 	}
@@ -71,10 +90,14 @@ func (d *detector) Help() []string {
 func (d *detector) Key(k byte) {
 	switch k {
 	case 'z':
-		d.zeroing, d.sum, d.sum2, d.n = zeroTime, 0, 0, 0
+		d.startZero()
 	case 'b':
 		d.beep = !d.beep
 	}
+}
+
+func (d *detector) startZero() {
+	d.zeroing, d.sum, d.sum2, d.n, d.calm = zeroTime, 0, 0, 0, 0
 }
 
 // SetOut gives the demo the terminal, for the bell.
@@ -84,6 +107,18 @@ var heatCols = []uint8{34, 70, 106, 142, 178, 214, 208, 202, 196}
 
 func heat(p float64) uint8 {
 	return heatCols[min(int(clamp01(p)*float64(len(heatCols))), len(heatCols)-1)]
+}
+
+// calibration warns when the compass looks off: Android says so, or the
+// field the zero settled on is far from Earth's anywhere (20-70 uT).
+func (d *detector) calibration() string {
+	switch {
+	case d.accuracy >= 0 && d.accuracy < 2:
+		return "compass needs calibrating: wave a figure 8"
+	case d.base < 18 || d.base > 75:
+		return "compass off (after a magnet?): wave a figure 8, then z"
+	}
+	return ""
 }
 
 // detLabel prints a dial value with a sensible number of digits.
@@ -116,40 +151,69 @@ func (d *detector) Draw(v *View, ss *Streams, t, dt float64) {
 		return
 	}
 	field := math.Sqrt(r.V[0]*r.V[0] + r.V[1]*r.V[1] + r.V[2]*r.V[2])
+	d.accuracy = -1
+	if len(r.V) >= 4 {
+		d.accuracy = r.V[3]
+	}
 
 	if d.zeroing > 0 {
 		d.sum += field
 		d.sum2 += field * field
 		d.n++
+		mean := d.sum / float64(d.n)
+		spread := math.Sqrt(math.Max(0, d.sum2/float64(d.n)-mean*mean))
+		if spread > zeroStill { // moving: start over
+			d.sum, d.sum2, d.n = field, field*field, 1
+			d.zeroing = zeroTime
+			spread = 0
+		}
 		d.zeroing -= dt
-		if d.zeroing <= 0 {
+		if d.zeroing <= 0 && d.n > 1 && spread <= zeroStill {
 			d.zeroing = 0
-			mean := d.sum / float64(d.n)
 			d.base = mean
-			d.noise = math.Sqrt(math.Max(0, d.sum2/float64(d.n)-mean*mean))
+			d.noise = spread
 			d.hasBase = true
-			d.scale = niceScale(math.Max(2, 8*math.Max(d.noise, 0.15)))
-			d.shown = d.scale
+			d.minScale = niceScale(math.Max(2, 8*math.Max(d.noise, 0.15)))
+			d.scale, d.shown, d.peak = d.minScale, d.minScale, 0
 			d.dev, d.needle = 0, 0
 			d.hist = d.hist[:0]
+		} else if d.zeroing <= 0 {
+			d.zeroing = dt // keep waiting for stillness
+		}
+		if d.zeroing > 0 {
+			msg := "zeroing: hold still..."
+			v.Text((v.W-len(msg))/2, v.H/2-1, msg, 250)
+			if !d.hasBase {
+				return
+			}
 		}
 	}
 	if !d.hasBase {
-		msg := "zeroing: hold still..."
-		v.Text((v.W-len(msg))/2, v.H/2, msg, 250)
 		return
+	}
+	if d.zeroing == 0 {
+		d.base += (field - d.base) * math.Min(1, dt/autoZero)
 	}
 
 	// Deviation beyond the noise: within three standard deviations of the
 	// zero, it reads zero.
 	raw := field - d.base
-	band := 3 * math.Max(d.noise, 0.1)
+	band := math.Min(3*math.Max(d.noise, 0.1), maxBand)
 	dev := math.Copysign(math.Max(0, math.Abs(raw)-band), raw)
 	d.dev += (dev - d.dev) * math.Min(1, dt*10)
-	if a := math.Abs(d.dev); a > d.scale*0.9 {
-		d.scale = niceScale(a / 0.9) // widen for bigger readings
+	// The range follows the biggest reading of the last seconds: at once
+	// when it grows, easing back two seconds after it passed.
+	if a := math.Abs(d.dev); a >= d.peak {
+		d.peak, d.peakT = a, t
+	} else if t-d.peakT > 2 {
+		d.peak = math.Max(a, d.peak*math.Exp(-dt))
 	}
-	d.shown += (d.scale - d.shown) * math.Min(1, dt*4)
+	d.scale = math.Max(d.minScale, niceScale(d.peak/0.9))
+	if d.scale > d.shown {
+		d.shown += (d.scale - d.shown) * math.Min(1, dt*8)
+	} else {
+		d.shown += (d.scale - d.shown) * math.Min(1, dt*2)
+	}
 	d.needle += (clamp01(math.Abs(d.dev)/d.shown) - d.needle) * math.Min(1, dt*8)
 	d.hist = append(d.hist, d.dev)
 	if len(d.hist) > v.W {
@@ -210,6 +274,10 @@ func (d *detector) Draw(v *View, ss *Streams, t, dt float64) {
 	if verdict == "STRONG!" {
 		hint := "a magnet, or steel up close"
 		v.Text((v.W-len(hint))/2, dialH, hint, 244)
+	}
+	// The zero follows the field in the air, which should be Earth's.
+	if warn := d.calibration(); warn != "" {
+		v.Text(max(0, (v.W-len(warn))/2), 0, warn, 208)
 	}
 
 	// Pings: faster as the needle climbs, like a real detector.
