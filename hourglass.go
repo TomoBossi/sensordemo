@@ -46,9 +46,10 @@ type hourglass struct {
 	halfW      []float64
 	baseRows   int       // characters each ornate base takes
 	art        []artCell // the frame and glass, rendered once
+	counts     []uint8   // grains per character, per frame
 	cell       []int32   // grain index, or empty / wall
 	gx, gy     []int16   // grain positions
-	tone       []uint8
+	ferr       []float32 // each grain's leftover sideways step, so it falls straight
 	awake      []bool
 	active     []int32
 	order      []hgKey    // scratch for step
@@ -114,7 +115,7 @@ func (g *hourglass) layout(w, h int) {
 	g.w, g.h = w, h
 	g.fw, g.fh = w*hgSX, h*hgSY
 	g.cxF = float64(w/2*hgSX) + hgSX/2.0 // the middle of a character column
-	g.baseRows = max(3, min(9, h/6))
+	g.baseRows = max(4, min(11, h/5))
 	g.top, g.bot = g.baseRows*hgSY, (h-g.baseRows)*hgSY-1 // between the bases
 	g.nr = (g.top + g.bot) / 2
 	g.halfH = float64(g.bot-g.top) / 2
@@ -155,12 +156,12 @@ func (g *hourglass) layout(w, h int) {
 // widest is the glass's largest half width that leaves room for the posts
 // beside it and the bases around them.
 func (g *hourglass) widest() float64 {
-	return 0.76*(float64(g.fw)/2-1) - 5
+	return 0.76*(float64(g.fw)/2-1) - 7
 }
 
 // baseR is the bases' radius: the posts stand at 0.76 of it, clear of the
 // glass.
-func (g *hourglass) baseR() float64 { return (g.wmax + 5) / 0.76 }
+func (g *hourglass) baseR() float64 { return (g.wmax + 7) / 0.76 }
 
 // profile is the glass's inner half width at cell row y (continuous).
 func (g *hourglass) profile(y float64) float64 {
@@ -208,7 +209,7 @@ func (g *hourglass) fill(topUp bool) {
 		}
 	}
 	n := vol * 6 / 10
-	g.gx, g.gy, g.tone, g.awake = g.gx[:0], g.gy[:0], g.tone[:0], g.awake[:0]
+	g.gx, g.gy, g.ferr, g.awake = g.gx[:0], g.gy[:0], g.ferr[:0], g.awake[:0]
 	for k := 0; len(g.gx) < n; k++ {
 		y := g.nr - 1 - k // rows from the neck outward
 		if !topUp {
@@ -221,7 +222,7 @@ func (g *hourglass) fill(topUp bool) {
 			if g.cell[y*g.fw+x] == hgEmpty {
 				g.cell[y*g.fw+x] = int32(len(g.gx))
 				g.gx, g.gy = append(g.gx, int16(x)), append(g.gy, int16(y))
-				g.tone = append(g.tone, uint8(g.rng.Intn(len(hgSand))))
+				g.ferr = append(g.ferr, float32(g.rng.Float64()))
 				g.awake = append(g.awake, true)
 			}
 		}
@@ -357,12 +358,17 @@ func gcd(a, b int) int {
 
 // move lets grain i fall or slip once under the unit down direction u.
 func (g *hourglass) move(i int32, u [2]float64) bool {
-	// Fall: the neighbor closest to down, picked between the two around
-	// it in proportion, so the grains' drift follows any angle.
+	// Fall: one of the two neighbors around the down direction, the
+	// farther one whenever the grain's leftover sideways step adds up to
+	// a whole cell (as a line is drawn), so falling grains go straight
+	// along any angle instead of wandering.
 	a := math.Atan2(u[1], u[0]) / (math.Pi / 4)
 	o := int(math.Floor(a))
-	if g.rng.Float64() < a-float64(o) {
+	if e := g.ferr[i] + float32(a-float64(o)); e >= 1 {
 		o++
+		g.ferr[i] = e - 1
+	} else {
+		g.ferr[i] = e
 	}
 	o = (o%8 + 8) % 8
 	if g.try(i, hgDirs[o][0], hgDirs[o][1]) {
@@ -428,7 +434,7 @@ type hgKey struct {
 }
 
 var (
-	hgSand  = []uint8{136, 172, 178, 179, 180, 214, 220, 221}
+	hgSand  = []uint8{130, 136, 172, 178, 178, 179, 214, 220, 221, 222, 223}
 	hgGlass = uint8(152)
 	hgRim   = uint8(67)
 	hgShine = uint8(195)
@@ -501,6 +507,11 @@ func (g *hourglass) Draw(v *View, ss *Streams, t, dt float64) {
 		}
 	}
 	g.drawSand(v)
+	for i, a := range g.art { // the frame in front of the glass hides the sand
+		if a.front && g.counts[i] == 0 {
+			v.Set(i%g.w, i/g.w, a.ch, a.col)
+		}
+	}
 
 	left := time.Duration(float64(g.dur) * float64(src) / math.Max(1, float64(g.total))).Round(time.Second)
 	line := fmt.Sprintf("%s left of %s", clock(left), clock(g.dur))
@@ -519,30 +530,63 @@ func (g *hourglass) Draw(v *View, ss *Streams, t, dt float64) {
 }
 
 // drawSand draws each character from the grains in its 2x4 cells: how many,
-// and whether they sit high or low in it, pick the glyph; their tones the
-// color.
+// and whether they sit high or low in it, pick the glyph. The color is
+// shaded, not per grain: sand on the surface catches the light, packed
+// sand is deeper gold, with broad soft variation, so neighbors mostly
+// share a color (and the terminal gets few color changes).
 func (g *hourglass) drawSand(v *View) {
-	for cy := g.top / hgSY; cy <= g.bot/hgSY; cy++ {
+	if len(g.counts) != g.w*g.h {
+		g.counts = make([]uint8, g.w*g.h)
+	}
+	cnt := func(cx, cy int) int {
+		if cx < 0 || cy < 0 || cx >= g.w || cy >= g.h {
+			return 0
+		}
+		return int(g.counts[cy*g.w+cx])
+	}
+	type span struct{ x0, x1 int }
+	spans := make([]span, g.h)
+	for cy := 0; cy < g.h; cy++ {
+		spans[cy] = span{1, 0}
+		if cy < g.top/hgSY || cy > g.bot/hgSY {
+			continue
+		}
 		hw := 0.0 // the widest of the character's cell rows
 		for sy := 0; sy < hgSY; sy++ {
 			hw = math.Max(hw, g.halfW[cy*hgSY+sy])
 		}
-		x0 := max(0, int((g.cxF-hw)/hgSX))
-		x1 := min(g.w-1, int((g.cxF+hw)/hgSX))
-		for cx := x0; cx <= x1; cx++ {
-			n, tone, rows := 0, 0, 0
+		spans[cy] = span{max(0, int((g.cxF-hw)/hgSX)), min(g.w-1, int((g.cxF+hw)/hgSX))}
+		for cx := spans[cy].x0; cx <= spans[cy].x1; cx++ {
+			n := 0
 			for sy := 0; sy < hgSY; sy++ {
-				y := cy*hgSY + sy
+				row := (cy*hgSY + sy) * g.fw
 				for sx := 0; sx < hgSX; sx++ {
-					if c := g.cell[y*g.fw+cx*hgSX+sx]; c >= 0 {
+					if g.cell[row+cx*hgSX+sx] >= 0 {
 						n++
-						tone += int(g.tone[c])
-						rows += sy
 					}
 				}
 			}
+			g.counts[cy*g.w+cx] = uint8(n)
+		}
+	}
+	upY := -1 // the row toward "up", for the lit surface
+	if g.grav[1] < 0 {
+		upY = 1
+	}
+	for cy := 0; cy < g.h; cy++ {
+		for cx := spans[cy].x0; cx <= spans[cy].x1; cx++ {
+			n := cnt(cx, cy)
 			if n == 0 {
 				continue
+			}
+			rows := 0
+			for sy := 0; sy < hgSY; sy++ {
+				row := (cy*hgSY + sy) * g.fw
+				for sx := 0; sx < hgSX; sx++ {
+					if g.cell[row+cx*hgSX+sx] >= 0 {
+						rows += sy
+					}
+				}
 			}
 			mid := float64(rows) / float64(n) // 0 top .. 3 bottom
 			var ch byte
@@ -566,7 +610,16 @@ func (g *hourglass) drawSand(v *View) {
 			default:
 				ch = '%'
 			}
-			v.Set(cx, cy, ch, hgSand[tone/n])
+			// Light: the surface (little sand above) is bright; broad
+			// blotches vary the packed sand.
+			lit := 0.5 + 0.12*noise3(float64(cx)/7, float64(cy)/3.5, 0)
+			if cnt(cx, cy+upY) < 4 {
+				lit += 0.3
+			}
+			if n < 8 && cnt(cx, cy+upY) == 0 {
+				lit += 0.1
+			}
+			v.Set(cx, cy, ch, mzPick(hgSand, lit))
 		}
 	}
 }
