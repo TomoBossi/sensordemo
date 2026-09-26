@@ -220,11 +220,6 @@ func run(arg string, gray bool) error {
 	if err != nil {
 		return err
 	}
-	if o, ok := demo.(interface {
-		SetOut(interface{ Write([]byte) (int, error) })
-	}); ok {
-		o.SetOut(t.out)
-	}
 	defer t.Restore()
 	defer func() { // leave the terminal usable even if a demo panics
 		if p := recover(); p != nil {

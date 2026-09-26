@@ -55,8 +55,6 @@ type detector struct {
 	hist     []float64
 	lastPing float64
 	pingAt   float64
-	beep     bool
-	out      interface{ Write([]byte) (int, error) }
 	source   string // the magnetometer stream
 }
 
@@ -130,7 +128,7 @@ func (d *detector) Help() []string {
 		"First it calibrates: turn the phone through the six poses on screen and hold each a moment. That's saved; press k to do it again if turning the phone moves the needle.",
 		"Hold the phone still and press z to zero it, then sweep it slowly over a wall, a desk or an object. The sensor sits near the top of the phone. The zero stays until you press z again.",
 		"It finds iron, steel and nickel, and magnets: it can't tell them apart, since both bend the magnetic field. Aluminum, copper, brass, gold and silver don't show. Steel touching the phone reads very strong, magnetized by the phone's own magnets.",
-		"z  zero here    k  calibrate    b  vibrate on strong signals (Termux bell)",
+		"z  zero here    k  calibrate",
 	}
 }
 
@@ -142,17 +140,12 @@ func (d *detector) Key(k byte) {
 		}
 	case 'k':
 		d.calib = &calibration{}
-	case 'b':
-		d.beep = !d.beep
 	}
 }
 
 func (d *detector) startZero() {
 	d.zeroing, d.sum, d.sum2, d.n = zeroTime, 0, 0, 0
 }
-
-// SetOut gives the demo the terminal, for the bell.
-func (d *detector) SetOut(w interface{ Write([]byte) (int, error) }) { d.out = w }
 
 // fitSphere finds the center and radius of the sphere the points lie on,
 // by linear least squares: |p|^2 = 2 p.c + (r^2 - |c|^2). It returns the
@@ -437,9 +430,6 @@ func (d *detector) Draw(v *View, ss *Streams, t, dt float64) {
 	rate := 0.4 + 7*d.needle*d.needle // pings per second
 	if t-d.lastPing > 1/rate {
 		d.lastPing, d.pingAt = t, t
-		if d.beep && d.needle > 0.45 && d.out != nil {
-			d.out.Write([]byte("\a"))
-		}
 	}
 	if t-d.pingAt < 0.15 {
 		p := "((( o )))"
