@@ -441,7 +441,8 @@ func (g *snowglobe) project(p Vec3) (int, int, bool) {
 }
 
 var (
-	sgSoil    = []uint8{60, 103, 110, 146, 152, 189, 195} // pale icy blue
+	sgSoil    = []uint8{103, 110, 146, 152, 153, 189, 195} // pale icy blue
+	sgPacked  = []uint8{110, 146, 152, 153, 189, 195, 231} // packed snow under the surface
 	sgLog     = []uint8{52, 94, 94, 130, 136, 173}
 	sgShingle = []uint8{52, 52, 88, 124, 131, 167}
 	sgRock    = []uint8{237, 239, 242, 245, 248}
@@ -530,11 +531,22 @@ func (g *snowglobe) render(x, y int, lamp Vec3) pixel {
 
 	switch m {
 	case mGround:
+		if p.Len() > 0.98 {
+			// The cut face seen through the glass: packed snow lit through
+			// it, nearly white with a blue tint, a little darker deeper
+			// down and where the light grazes it. A slightly darker line
+			// where it meets the exposed surface.
+			depth := 0.55 + 0.45*smoothstep(-1, -0.45, p[1])
+			lit := 0.6 + 0.4*math.Max(0, n.Dot(sgMoon))
+			i := depth * lit
+			if groundY(p[0], p[2])-p[1] < 0.035 {
+				i -= 0.2
+			}
+			px.ch, px.col = sgShade(sgPacked, i, ".:;=+")
+			break
+		}
 		wv := hash2(int(p[0]*60), int(p[2]*60), 1)
-		// Darker with depth: the surface is pale, and the cut face seen
-		// through the glass fades down into the dark as the view drops.
-		depth := 0.25 + 0.75*smoothstep(-0.95, -0.42, p[1])
-		px.ch, px.col = sgShade(sgSoil, (0.25+0.75*light)*depth, ".,:;")
+		px.ch, px.col = sgShade(sgSoil, 0.35+0.65*light, ".,:;")
 		if wv%7 == 0 {
 			px.ch = '\''
 		}
