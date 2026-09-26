@@ -84,6 +84,7 @@ type pixel struct {
 	warm  float64 // how much of it is the lamp's
 	ov    byte    // glass reflection drawn over everything
 	ovCol uint8
+	glint bool // ov is a reflection: it only adds light
 }
 
 const (
@@ -625,13 +626,13 @@ func (g *snowglobe) glassOver(px *pixel, at Vec3, r2 float64, glass, empty bool)
 	for _, l := range g.lights {
 		best = math.Max(best, r.Dot(l))
 	}
-	switch { // grayish, so glints don't pass for snow
+	switch {
 	case best > 0.995:
-		px.ov, px.ovCol = '@', 250
+		px.ov, px.ovCol, px.glint = '@', 231, true
 	case best > 0.985:
-		px.ov, px.ovCol = '*', 246
+		px.ov, px.ovCol, px.glint = '*', 252, true
 	case best > 0.93 && empty:
-		px.ov, px.ovCol = '.', 242
+		px.ov, px.ovCol, px.glint = '.', 246, true
 	}
 }
 
@@ -1061,7 +1062,9 @@ func (g *snowglobe) compose(v *View, t float64) {
 				}
 				col = sgFlakeC[int(near*float64(len(sgFlakeC)-1)+0.5)]
 			}
-			if p.ov != 0 {
+			// A reflection only adds light: where it overlaps something
+			// brighter (snow behind the glass), that shows instead.
+			if p.ov != 0 && (!p.glint || ch == ' ' || luminance(p.ovCol) >= luminance(col)) {
 				ch, col = p.ov, p.ovCol
 			}
 			v.Set(x, y, ch, col)
