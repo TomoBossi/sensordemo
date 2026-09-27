@@ -130,7 +130,7 @@ func glyph(c byte, u, v float64) float64 {
 			return 1
 		}
 		return 0
-	case ':':
+	case ':', ';':
 		if near(u-0.5) > 0 && (v > 0.3 && v < 0.4 || v > 0.7 && v < 0.8) {
 			return 1
 		}
