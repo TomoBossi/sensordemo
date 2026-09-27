@@ -643,7 +643,7 @@ func (l *lavalamp) trace(eye, dir Vec3, wax []blob, t float64) ([3]float64, [3]f
 		// The liquid glows: most by the bulb, and around hot wax.
 		u := (q[1] - lavaBaseTop) / (lavaCapBot - lavaBaseTop)
 		bulb := math.Exp(-u * 3.2)
-		aura := smoothstep(0.02, lavaT, f) * (0.4 + heat)
+		aura := smoothstep(0.02, lavaT, f) * (0.8 + 0.5*heat) // every blob has its halo
 		g := (0.95 + 1.8*bulb) * ds
 		a := aura * 2.2 * ds
 		for k := 0; k < 3; k++ {
@@ -667,16 +667,19 @@ func (l *lavalamp) shadeWax(p, dir Vec3, wax []blob, heat float64) [3]float64 {
 		f(p.Sub(Vec3{0, 0, e})) - f(p.Add(Vec3{0, 0, e})),
 	}.Norm()
 	u := (p[1] - lavaBaseTop) / (lavaCapBot - lavaBaseTop)
-	bulb := math.Max(0, n.Dot(Vec3{0, -1, 0}))*(0.9*math.Exp(-u*1.5)) + 0.15
+	bulb := math.Max(0, n.Dot(Vec3{0, -1, 0}))*(0.6*math.Exp(-u*1.5)) + 0.2
 	room := 0.3 * math.Max(0, n.Dot(lavaRoom))
 	spec := math.Pow(math.Max(0, n.Dot(lavaRoom.Sub(dir).Norm())), 30)
-	glow := 0.35 + 0.5*heat // wax glows with its heat
-	hot := [3]float64{1, 0.62, 0.12}
-	cool := [3]float64{0.85, 0.12, 0.05}
+	// All the wax glows, whatever its temperature or size; only the very
+	// coldest, right up at the top, dims a little.
+	glow := 0.75 + 0.25*heat
+	glow *= 1 - 0.3*smoothstep(0.85, 1, u)*(1-heat)
+	hot := [3]float64{1, 0.66, 0.15}
+	cool := [3]float64{1, 0.3, 0.1} // orange-red, not dark
 	var c [3]float64
 	for k := 0; k < 3; k++ {
 		base := cool[k] + (hot[k]-cool[k])*heat
-		c[k] = base*(bulb+room+glow*0.6) + 0.6*spec
+		c[k] = base*(bulb+room+glow*0.75) + 0.6*spec
 	}
 	return c
 }
