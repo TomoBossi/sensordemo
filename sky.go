@@ -142,6 +142,9 @@ func noise3(x, y, z float64) float64 {
 		lerp(lerp(c(0, 0, 1), c(1, 0, 1), fx), lerp(c(0, 1, 1), c(1, 1, 1), fx), fy), fz)
 }
 
+// snoise is noise3 centered: -1..1.
+func snoise(x, y, z float64) float64 { return 2*noise3(x, y, z) - 1 }
+
 // fbm is fractal noise in [-0.5, 0.5].
 func fbm(x, y, z float64, octaves int) float64 {
 	sum, amp, norm := 0.0, 0.5, 0.0
