@@ -84,3 +84,41 @@ func TestUnsubscribedStreamReads(t *testing.T) {
 	f.Resize(60, 30)
 	s.Draw(f.View(0, 0, 60, 30), ss, 0, 1.0/30) // waits for a fix
 }
+
+// The rendered shadow's edge, the one that tells the time, lies on the hour
+// line for the sun's time (drawn from the gnomon's edge that casts it),
+// within a degree, morning and afternoon, north and south.
+func TestSundialShadowEdge(t *testing.T) {
+	for _, place := range [][2]float64{{-34.60372, -58.38159}, {51.48, 0}} {
+		for _, hr := range []float64{8.5, 10, 11.5, 13, 14.5, 16} {
+			s := &sundial{lat: place[0], lon: place[1]}
+			s.gnomonLen = dialRoot + 0.62
+			s.gnomonHt = s.gnomonLen * math.Tan(math.Abs(dialLat(s.lat))*math.Pi/180)
+			tm := time.Date(2026, 9, 27, 0, 0, 0, 0, time.UTC).Add(time.Duration((hr - place[1]/15) * float64(time.Hour)))
+			s.sun, s.hourAng = sunAt(tm, s.lat, s.lon)
+			if s.sun[1] < 0.15 {
+				continue
+			}
+			P := s.pole()
+			from := P.Scale(-dialRoot).Add(Vec3{dialStyle * math.Copysign(1, s.hourAng), 0, 0})
+			ex, px := shadowDir(s.hourAng, s.lat)
+			line := math.Atan2(ex, px)
+			// Walk across the line, from the far side (lit) toward noon.
+			side := -math.Copysign(1, s.hourAng) // toward the noon line
+			edge := math.NaN()
+			for a := -5.0; a <= 5; a += 0.02 {
+				th := line + side*a*math.Pi/180
+				d := Vec3{math.Sin(th), 0, 0}.Add(P.Scale(math.Cos(th)))
+				p := from.Add(d.Scale(0.45))
+				p[1] = dialTop
+				if s.lit(p, Vec3{0, 1, 0}) < 0.5 {
+					edge = a
+					break
+				}
+			}
+			if math.IsNaN(edge) || math.Abs(edge) > 1 {
+				t.Errorf("lat %.0f, sun %.2f h: the shadow's edge is %.2f degrees off its hour line", s.lat, 12+s.hourAng/15, edge)
+			}
+		}
+	}
+}

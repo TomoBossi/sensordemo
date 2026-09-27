@@ -47,8 +47,9 @@ type sundial struct {
 }
 
 const (
-	dialTop   = 0.05 // the plate's face
-	dialRoot  = 0.62 // the gnomon's root, from the middle toward the equator
+	dialTop   = 0.05  // the plate's face
+	dialRoot  = 0.62  // the gnomon's root, from the middle toward the equator
+	dialStyle = 0.009 // half the gnomon's thickness
 	dialSlab  = -0.16
 	dialFloor = -3.2
 )
@@ -301,7 +302,7 @@ func (s *sundial) gnomonSDF(p Vec3) float64 {
 	// A round hole, for grace.
 	hole := len2(u-L*0.7, w-H*0.28) - H*0.16
 	tri = math.Max(tri, -hole)
-	x := math.Abs(p[0]) - 0.018
+	x := math.Abs(p[0]) - dialStyle
 	return math.Min(math.Max(tri, x), 0) + len2(math.Max(tri, 0), math.Max(x, 0))
 }
 
@@ -332,7 +333,7 @@ func (s *sundial) lit(p, n Vec3) float64 {
 		if d < 0.0005 {
 			return 0
 		}
-		res = math.Min(res, 14*d/t)
+		res = math.Min(res, 150*d/t) // the Sun's disc: a narrow penumbra
 		t += math.Max(d, 0.004)
 	}
 	return clamp01(res)
@@ -419,16 +420,15 @@ func (s *sundial) render(v *View, area int) {
 	E := Vec3{1, 0, 0}
 	root := P.Scale(-dialRoot)
 	root[1] = dialTop
-	// Where a line from the root, along dir, meets a circle about the
-	// middle.
-	meet := func(dir Vec3, r float64) (Vec3, bool) {
-		b := root[0]*dir[0] + root[2]*dir[2]
-		c := root[0]*root[0] + root[2]*root[2] - r*r
+	// Where a line from o along dir meets a circle about the middle.
+	meet := func(o, dir Vec3, r float64) (Vec3, bool) {
+		b := o[0]*dir[0] + o[2]*dir[2]
+		c := o[0]*o[0] + o[2]*o[2] - r*r
 		disc := b*b - c
 		if disc < 0 {
 			return Vec3{}, false
 		}
-		return root.Add(dir.Scale(-b + math.Sqrt(disc))), true
+		return o.Add(dir.Scale(-b + math.Sqrt(disc))), true
 	}
 	// The chapter rings.
 	for _, r := range []float64{0.74, 0.9} {
@@ -439,23 +439,30 @@ func (s *sundial) render(v *View, area int) {
 		}
 	}
 	// The hours from the root out to the rings, half hours between them,
-	// and the hours' numbers.
+	// and the hours' numbers. The shadow's edge that tells the time is
+	// cast by the gnomon's far side from the Sun: its west edge in the
+	// morning, its east edge after noon; so, as on real dials, morning
+	// lines start from the one and afternoon lines from the other.
 	for hh := 10; hh <= 38; hh++ { // 5:00 to 19:00, as long as the sun can be up
 		sx, sp := shadowDir(float64(hh-24)*7.5, lat)
 		dir := E.Scale(sx).Add(P.Scale(sp))
-		outer, ok := meet(dir, 0.9)
+		from := root.Add(E.Scale(dialStyle * math.Copysign(1, float64(hh-24))))
+		if hh == 24 {
+			from = root
+		}
+		outer, ok := meet(from, dir, 0.9)
 		if !ok {
 			continue
 		}
 		if hh%2 == 1 {
-			if inner, ok := meet(dir, 0.74); ok {
+			if inner, ok := meet(from, dir, 0.74); ok {
 				engrave(inner, outer)
 			}
 			continue
 		}
-		engrave(root.Add(dir.Scale(0.14)), outer)
+		engrave(from.Add(dir.Scale(0.14)), outer)
 		// The number, between the rings, if the face shows there.
-		q, ok := meet(dir, 0.82)
+		q, ok := meet(from, dir, 0.82)
 		if !ok || -F[1] < 0.3 {
 			continue
 		}
@@ -471,6 +478,15 @@ func (s *sundial) render(v *View, area int) {
 		if show {
 			fb := face[int(py)*w+int(px)]
 			v.Text(x0, int(py), label, mzPick(artBrassRamp, fb*0.3))
+		}
+	}
+	// True north, cut into the capital's top, to check the view against
+	// the world.
+	north := Vec3{0, -0.004, -1.09}
+	if nx, ny := proj(north); int(ny) >= 0 && int(ny) < area && int(nx) >= 0 && int(nx) < w {
+		d := north.Sub(origin)
+		if hit, m := s.march(origin, d.Norm(), d.Len()+0.05); m == 2 && math.Abs(hit-d.Len()) < 0.06 {
+			v.Set(int(nx), int(ny), 'N', 196)
 		}
 	}
 }
