@@ -86,7 +86,7 @@ func (s *pendulum) Setup(ss *Streams) ([]*Gauge, error) {
 func (s *pendulum) Help() []string {
 	return []string{
 		"Move the phone to push the pendulum: the tray moves, the funnel lags and swings. Shake hard to level the sand.",
-		"space  a fresh swing    f  next ratio    c  smooth the sand and refill",
+		"space  a fresh swing    f  next ratio    s  smooth the sand and refill",
 	}
 }
 
@@ -97,7 +97,7 @@ func (s *pendulum) Key(k byte) {
 	case 'f':
 		s.ratio = (s.ratio + 1) % len(pendRatios)
 		s.swing()
-	case 'c':
+	case 's':
 		clear(s.h)
 		s.sand = 1
 	}
@@ -289,7 +289,7 @@ func (s *pendulum) Draw(v *View, ss *Streams, t, dt float64) {
 	s.render(v, area, t)
 	line := pendRatios[s.ratio].name + fmt.Sprintf("  sand %d%%", int(s.sand*100+0.5))
 	if s.sand == 0 {
-		line = pendRatios[s.ratio].name + "  the funnel is empty: c to refill"
+		line = pendRatios[s.ratio].name + "  the funnel is empty: s to refill"
 	}
 	v.Text(max(0, (v.W-len(line))/2), area, line, 244)
 }

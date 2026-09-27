@@ -21,11 +21,16 @@ func init() {
 // down the sides and end in beads. The wax is lit by the flame itself, a
 // point light, and glows from within near the top and through the thin
 // rim, as wax does. The flame is a volume: each ray gathers its light, a
-// blue root, a white core, orange, red tips, unless the wax is in front.
+// blue root that fades into the rest, a white core, orange, red tips,
+// unless the wax is in front. It glints white on the rim's lips, and as
+// a trembling blur of light on the pool.
 //
 // Turning the phone swings the view around the candle, as in the eye:
-// within a range, easing into its limits. Moving the phone makes the
-// flame lag and sway; a shake makes it gutter. Covering the proximity
+// within a range, easing into its limits. Moving the phone moves the
+// candle through the air, and the air it leaves behind is a wind on the
+// flame: it leans downwind, most at its tip, whips back past upright and
+// wavers, the unsettled air rippling up it; moved up, it draws out. A
+// faint draught keeps it from ever standing quite still. Covering the proximity
 // sensor snuffs it, leaving a curl of smoke and a fading ember;
 // uncovering lights it again.
 //
@@ -34,9 +39,12 @@ func init() {
 type candle struct {
 	drips   []wdrip
 	rng     *rand.Rand
-	sway    [2]float64 // the flame tip's offset in x and z
+	sway    [2]float64 // how far the flame's tip leans, in x and z
 	swayV   [2]float64
-	power   float64 // 0 out .. 1 burning
+	wind    [2]float64 // the air moving past the candle, as the phone moves it
+	turb    float64    // how unsettled that air is: the flame wavers
+	stretch float64    // moved up, the flame draws out; down, it squats
+	power   float64    // 0 out .. 1 burning
 	lit     bool
 	covered float64
 	gutter  float64
@@ -49,7 +57,14 @@ type candle struct {
 	firstCount int
 	eye        Vec3 // toward the camera from the target, smoothed
 
-	H, t float64 // this frame's flame height, and time
+	H, t   float64 // this frame's flame height, and time
+	glintA Vec3    // the flame's bright part, as the pool sees it
+	glintB Vec3
+
+	// This frame, per cell: how far the wax is (along the view), and
+	// whether the flame shows there; smoke hides behind both.
+	zbuf  []float64
+	flame []bool
 
 	// The wax's irregularity, precomputed: the column's radius by angle
 	// and height, and the rim's height by angle.
@@ -122,7 +137,7 @@ const (
 var (
 	waxRamp   = []uint8{232, 233, 52, 88, 124, 166, 173, 215, 222, 223, 230} // warm, glowing paraffin
 	flameRamp = []uint8{52, 88, 124, 160, 196, 202, 208, 214, 220, 221, 228, 229, 230, 231}
-	rootRamp  = []uint8{17, 18, 19, 20, 26, 33, 39}
+	rootRamp  = []uint8{17, 18, 19, 20, 26, 27, 33}
 	wallRamp  = []uint8{233, 52, 52, 88, 94, 130, 166}
 	poolRamp  = []uint8{232, 52, 88, 130, 166, 172, 214, 220, 221} // molten wax, amber
 )
@@ -155,7 +170,7 @@ func (c *candle) Setup(ss *Streams) ([]*Gauge, error) {
 
 func (c *candle) Help() []string {
 	return []string{
-		"Turn the phone to look at the candle from another side (within a range). Move the phone and the flame lags and sways; shake it and it gutters.",
+		"Turn the phone to look at the candle from another side (within a range). Move the phone and the air it leaves behind blows on the flame: it leans, whips back and wavers.",
 		"Cover the top of the phone (the proximity sensor) to snuff it; uncover to light it again.",
 		"space  snuff or light    r  face it again",
 	}
@@ -165,7 +180,9 @@ func (c *candle) Key(k byte) {
 	switch k {
 	case ' ':
 		c.lit = !c.lit
-		if !c.lit {
+		if c.lit {
+			c.relit()
+		} else {
 			c.snuffed()
 		}
 	case 'r':
@@ -181,6 +198,21 @@ func (c *candle) snuffed() {
 	for i := 0; i < 90; i++ {
 		c.smoke = append(c.smoke, puff{p: Vec3{0.05, candleWickTop + 0.1, 0}, v: Vec3{0, 0.9 + 0.4*c.rng.Float64(), 0}, life: 4 + 2.5*c.rng.Float64(), age: -float64(i) * 0.05})
 	}
+}
+
+// relit stops the smoke at once: what hadn't risen yet never does, what's
+// still low enough to reach the flame is burned away, and the rest thins
+// out quickly.
+func (c *candle) relit() {
+	kept := c.smoke[:0]
+	for _, p := range c.smoke {
+		if p.age < 0 || p.p[1] < candleWickTop+2.8 {
+			continue
+		}
+		p.life = math.Min(p.life, p.age+0.8)
+		kept = append(kept, p)
+	}
+	c.smoke = kept
 }
 
 // look turns the phone's rotation since the reference into a view around
@@ -233,17 +265,28 @@ func (c *candle) Draw(v *View, ss *Streams, t, dt float64) {
 	if s := ss.Get("linear_acceleration"); s != nil {
 		if r := s.Read(); r.OK && len(r.V) >= 3 {
 			acc = toScreen(ss, r.V)
-			if m := acc.Len(); m > 6 {
-				c.gutter = math.Min(1, c.gutter+(m-6)*dt*0.25)
+			if m := acc.Len(); m > 8 {
+				c.gutter = math.Min(1, c.gutter+(m-8)*dt*0.2)
 			}
 		}
 	}
 	c.gutter = math.Max(0, c.gutter-dt*0.5)
-	// Screen x is the scene's across; screen z (toward you) its depth.
+	// Moving the phone moves the candle through the air: the air it leaves
+	// behind blows on the flame, which leans with it, whips back past
+	// upright and wavers. Screen x is the scene's across, screen z (toward
+	// you) its depth. The room has a faint draught of its own.
 	for k, a := range [2]float64{acc[0], acc[2]} {
-		c.swayV[k] += (-40*c.sway[k] - 5*c.swayV[k] - a*0.16) * dt
-		c.sway[k] = math.Max(-0.9, math.Min(0.9, c.sway[k]+c.swayV[k]*dt))
+		c.wind[k] += (-a*0.9 - c.wind[k]/0.35) * dt
 	}
+	draught := [2]float64{0.05 * snoise(t*0.5, 1, 0), 0.04 * snoise(t*0.43, 7, 0)}
+	for k := 0; k < 2; k++ {
+		lean := math.Max(-1.1, math.Min(1.1, c.wind[k]*0.45+draught[k]))
+		c.swayV[k] += (-55*(c.sway[k]-lean) - 6*c.swayV[k]) * dt
+		c.sway[k] = math.Max(-1.3, math.Min(1.3, c.sway[k]+c.swayV[k]*dt))
+	}
+	gust := math.Hypot(c.wind[0], c.wind[1]) + 0.08*math.Hypot(c.swayV[0], c.swayV[1])
+	c.turb += (math.Min(1, 0.07+gust*0.6) - c.turb) * math.Min(1, dt*4)
+	c.stretch += (math.Max(-0.2, math.Min(0.2, acc[1]*0.025)) - c.stretch) * math.Min(1, dt*6)
 	if s := ss.Get("proximity"); s != nil {
 		if r := s.Read(); r.OK && len(r.V) > 0 {
 			near := r.V[0] < 3
@@ -253,6 +296,7 @@ func (c *candle) Draw(v *View, ss *Streams, t, dt float64) {
 				c.snuffed()
 			case !near && !c.lit && c.covered > 1:
 				c.lit = true
+				c.relit()
 			}
 			if near == !c.lit {
 				c.covered += dt
@@ -273,8 +317,8 @@ func (c *candle) Draw(v *View, ss *Streams, t, dt float64) {
 	} else {
 		c.melt = math.Max(0, c.melt-dt*0.12)
 	}
-	if c.lit && (c.gutter > 0.4 || c.power < 0.6) && c.rng.Float64() < dt*10 {
-		c.smoke = append(c.smoke, puff{p: Vec3{c.sway[0] * 0.5, candleWickTop + 1.6, c.sway[1] * 0.5}, v: Vec3{0, 1, 0}, life: 2})
+	if c.lit && c.gutter > 0.5 && c.rng.Float64() < dt*8 { // a whipped flame smokes at its tip
+		c.smoke = append(c.smoke, puff{p: Vec3{0.06 + c.sway[0], candleWickTop + c.H*1.05, c.sway[1]}, v: Vec3{0, 1, 0}, life: 1.5})
 	}
 	for i := 0; i < len(c.smoke); i++ {
 		p := &c.smoke[i]
@@ -397,7 +441,7 @@ func (c *candle) flameRay(o, dir Vec3, maxT float64) (float64, float64) {
 	if c.power <= 0 {
 		return 0, 0
 	}
-	f0, f1, ok := cylSpan(o, dir, 0.06, 0, 0.55+math.Hypot(c.sway[0], c.sway[1]), candleWickTop-0.2, candleWickTop+c.H*1.2)
+	f0, f1, ok := cylSpan(o, dir, 0.06, 0, 0.55+math.Hypot(c.sway[0], c.sway[1])+0.15*c.turb, candleWickTop-0.2, candleWickTop+c.H*1.2)
 	for ft := f0; ok && ft < math.Min(maxT, f1); ft += 0.035 {
 		b, root := c.flameAt(o.Add(dir.Scale(ft)), c.H)
 		glow += b * 0.035 * math.Min(1, c.power*1.5)
@@ -406,15 +450,55 @@ func (c *candle) flameRay(o, dir Vec3, maxT float64) (float64, float64) {
 	return glow, rootG
 }
 
-// flameGlyph draws gathered flame light.
-func flameGlyph(glow, rootG float64) (byte, uint8) {
+// bayer4 orders a 4x4 cell's thresholds, for dithering.
+var bayer4 = [16]float64{0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5}
+
+// flameGlyph draws gathered flame light at cell x, y. The blue root fades
+// into the rest by dithering: the bluer the light, the more cells take the
+// root's blue, the rest the flame's colors. The blue is thin, a haze: over
+// the wax, fewer cells show it, and as sparse dots (ok false: leave the
+// wax be).
+func flameGlyph(glow, rootG float64, x, y int, overWax bool) (byte, uint8, bool) {
 	b := clamp01(glow * 0.9)
 	const ramp = ".:+*#%@@"
 	ch := ramp[min(len(ramp)-1, int(math.Sqrt(b)*float64(len(ramp)-1)+0.5))]
-	if rootG > glow*0.5 {
-		return ch, mzPick(rootRamp, b*1.3)
+	blue := smoothstep(0.3, 0.9, rootG/math.Max(glow, 1e-9))
+	if blue > 0.02 {
+		th := (bayer4[(y%4)*4+x%4] + 0.5) / 16
+		if overWax {
+			switch {
+			case blue*0.45 > th:
+				return ".:"[boolIdx(b > 0.3)], mzPick(rootRamp, 0.4+b), true
+			case blue > th:
+				return 0, 0, false // clear enough to see the wax through
+			}
+		} else if blue > th {
+			return ".:+*"[min(3, int(math.Sqrt(b)*3.99))], mzPick(rootRamp, b), true
+		}
 	}
-	return ch, mzPick(flameRamp, b)
+	return ch, mzPick(flameRamp, b), true
+}
+
+// glint is how near a ray from p along d passes the flame's bright part
+// (from glintA to glintB), blurred over sigma: 1 through it, 0 far off.
+func (c *candle) glint(p, d Vec3, sigma float64) float64 {
+	if d[1] <= 0 {
+		return 0
+	}
+	a, b := c.glintA, c.glintB
+	u := b.Sub(a)
+	w0 := p.Sub(a)
+	// Closest points between the ray p + t d (t > 0) and the segment.
+	A, B, C := d.Dot(d), d.Dot(u), u.Dot(u)
+	D, E := d.Dot(w0), u.Dot(w0)
+	den := A*C - B*B
+	sp, tq := 0.0, 0.0
+	if den > 1e-9 {
+		sp = math.Max(0, (B*E-C*D)/den)
+		tq = clamp01((A*E - B*D) / den)
+	}
+	gap := w0.Add(d.Scale(sp)).Sub(u.Scale(tq)).Len()
+	return math.Exp(-gap * gap / (sigma * sigma))
 }
 
 // flameAt is the flame's glow at p: its brightness per unit of path, and
@@ -425,8 +509,12 @@ func (c *candle) flameAt(p Vec3, H float64) (float64, float64) {
 		return 0, 0
 	}
 	sc := clamp01(s)
-	ax := Vec3{0.06 + c.sway[0]*sc*sc, 0, c.sway[1] * sc * sc}
-	width := 0.78 * math.Pow(sc+0.04, 0.45) * math.Pow(1.05-sc, 0.9) * (1 - 0.3*c.gutter)
+	// Its axis leans with the wind, most at the tip, and ripples upward
+	// where the air is unsettled; its width wavers too.
+	bend := math.Pow(sc, 1.6)
+	wave := c.turb * 0.14 * sc
+	ax := Vec3{0.06 + c.sway[0]*bend + wave*math.Sin(sc*7-c.t*17+1.3), 0, c.sway[1]*bend + wave*math.Sin(sc*6.3-c.t*15)}
+	width := 0.78 * math.Pow(sc+0.04, 0.45) * math.Pow(1.05-sc, 0.9) * (1 - 0.15*c.gutter) * (1 + 0.18*c.turb*math.Sin(sc*9+c.t*21))
 	if s < 0 {
 		width = 0.16
 	}
@@ -436,8 +524,8 @@ func (c *candle) flameAt(p Vec3, H float64) (float64, float64) {
 	}
 	edge := 1 - smoothstep(0.5, 1.25, q)
 	core := (1 - smoothstep(0, 0.6, q)) * (1 - smoothstep(0.15, 0.75, sc)) * smoothstep(0.02, 0.1, sc)
-	b := edge * (0.45 + 0.7*core) * (1 - 0.75*smoothstep(0.6, 1.1, sc)) / width
 	root := (1 - smoothstep(0, 0.16, sc)) * (1 - core)
+	b := edge * (0.45 + 0.7*core) * (1 - 0.75*smoothstep(0.6, 1.1, sc)) * (1 - 0.35*root) / width
 	return b, root
 }
 
@@ -452,12 +540,19 @@ func (c *candle) render(v *View, t float64) {
 	tanY := 2.9 / candleDist
 	tanX := tanY * float64(w) / (2 * float64(h))
 
-	flick := 0.08*noise3(t*3.1, 0, 0) + 0.05*math.Sin(t*11)*noise3(t*1.7, 5, 0)
-	flick += c.gutter * (0.25*math.Sin(t*23) + 0.2*noise3(t*9, 3, 0))
-	H := 2.0 * (0.25 + 0.75*c.power) * (1 + flick) * (1 - 0.35*c.gutter)
+	// A slow breath in its height, quicker tremors in unsettled air; the
+	// flame draws out when moved up, and a lean shortens it.
+	H := 2.0 * (0.25 + 0.75*c.power) * (1 + 0.03*snoise(t*1.3, 0, 0) + 0.12*c.turb*snoise(t*7, 3, 0) + c.stretch)
+	H *= (1 - 0.15*c.gutter) / (1 + 0.25*math.Hypot(c.sway[0], c.sway[1]))
 	c.H, c.t = H, t
-	light := c.power * (1 - 0.3*c.gutter) * (1 + 0.5*flick)
-	lamp := Vec3{0.06 + c.sway[0]*0.25, candleWickTop + H*0.35, c.sway[1] * 0.25} // the flame's light
+	light := c.power * (1 - 0.2*c.gutter) * (1 + 0.03*snoise(t*1.1, 9, 0))
+	lamp := Vec3{0.06 + c.sway[0]*0.35, candleWickTop + H*0.35, c.sway[1] * 0.35} // the flame's light
+	// The pool's glint: the flame's bright part, as a line.
+	c.glintA = Vec3{0.06, candleWickTop + H*0.08, 0}
+	c.glintB = Vec3{0.06 + c.sway[0]*0.45, candleWickTop + H*0.6, c.sway[1] * 0.45}
+	if len(c.zbuf) != w*h {
+		c.zbuf, c.flame = make([]float64, w*h), make([]bool, w*h)
+	}
 	// Where the flame shows on screen, for the glow on the wall behind.
 	fc := lamp.Sub(origin)
 	fx := fc.Dot(Rt) / fc.Dot(F) / tanX
@@ -487,6 +582,8 @@ func (c *candle) render(v *View, t float64) {
 			}
 			// The flame's light along the ray, in front of the wax.
 			glow, rootG := c.flameRay(origin, dir, hitT)
+			c.zbuf[y*w+x] = hitT * dir.Dot(F)
+			c.flame[y*w+x] = glow > 0.06
 			var ch byte
 			var col uint8
 			if m != 0 {
@@ -501,7 +598,9 @@ func (c *candle) render(v *View, t float64) {
 				}
 			}
 			if glow > 0.06 {
-				ch, col = flameGlyph(glow, rootG)
+				if fch, fcol, ok := flameGlyph(glow, rootG, x, y, m != 0); ok {
+					ch, col = fch, fcol
+				}
 			}
 			if ch != 0 {
 				v.Set(x, y, ch, col)
@@ -537,7 +636,7 @@ func (c *candle) drawSmoke(v *View, origin, F, Rt, U Vec3, tanX, tanY float64) {
 		for y := max(0, int(sy-ry)); y <= min(h-1, int(sy+ry)); y++ {
 			for x := max(0, int(sx-rx)); x <= min(w-1, int(sx+rx)); x++ {
 				qx, qy := (float64(x)+0.5-sx)/rx, (float64(y)+0.5-sy)/ry
-				if q := qx*qx + qy*qy; q < 1 {
+				if q := qx*qx + qy*qy; q < 1 && z < c.zbuf[y*w+x] {
 					dens[y*w+x] += amt * (1 - q)
 				}
 			}
@@ -545,7 +644,7 @@ func (c *candle) drawSmoke(v *View, origin, F, Rt, U Vec3, tanX, tanY float64) {
 	}
 	const wisps = ".,:;~"
 	for i, dn := range dens {
-		if dn < 0.12 {
+		if dn < 0.12 || c.flame[i] {
 			continue
 		}
 		b := clamp01(dn * 0.8)
@@ -568,17 +667,20 @@ func (c *candle) shade(p, dir Vec3, m int, lamp Vec3, light float64) (byte, uint
 			return '|', mzPick(flameRamp, 0.4*math.Max(c.power, c.ember))
 		}
 		return '|', mzPick(waxRamp, 0.04)
-	case 2: // liquid wax: glossy, lit, the flame mirrored in it
+	case 2: // liquid wax: glossy, lit, the flame glinting in it
 		if c.melt < 0.35 {
 			break // set: wax again
 		}
-		// The surface trembles with the flame.
-		wob := 0.03 + 0.08*c.gutter
-		n = Vec3{wob * noise3(p[0]*5, p[2]*5, c.t*2), 1, wob * noise3(p[0]*5+7, p[2]*5, c.t*2)}.Norm()
+		// The surface trembles, more in unsettled air; the flame's glint
+		// on it is a blur of light where the reflected ray passes near
+		// the flame's bright part.
+		wob := 0.05 + 0.1*c.turb + 0.08*c.gutter
+		n = Vec3{wob * snoise(p[0]*6, p[2]*6, c.t*2.5), 1, wob * snoise(p[0]*6+7, p[2]*6, c.t*2.5)}.Norm()
 		refl := dir.Sub(n.Scale(2 * dir.Dot(n)))
-		i := 0.25*light + 0.45*light*atten + 0.1*c.melt
-		if g, root := c.flameRay(p.Add(refl.Scale(0.01)), refl, math.Inf(1)); g*0.7 > 0.06 {
-			return flameGlyph(g*0.7, root*0.7)
+		g := c.glint(p, refl, 0.16+0.15*c.turb) * light * smoothstep(0.35, 0.8, c.melt)
+		i := 0.22*light + 0.4*light*atten + 0.1*c.melt + 0.7*g
+		if g > 0.5 {
+			return '@', mzPick(flameRamp, 0.8+0.2*clamp01((g-0.5)*2))
 		}
 		const solid = "=+*#%@"
 		return solid[int(clamp01(i)*5+0.5)], mzPick(poolRamp, i)
@@ -587,20 +689,25 @@ func (c *candle) shade(p, dir Vec3, m int, lamp Vec3, light float64) (byte, uint
 	// thin rim.
 	diff := math.Max(0, (n.Dot(L)+0.35)/1.35)
 	r := math.Hypot(p[0], p[2])
-	through := light * 0.35 * math.Exp(-math.Max(0, -p[1])*1.3)
+	through := light * 0.3 * math.Exp(-math.Max(0, -p[1])*1.3)
 	// Drips are thin, and glow further down.
 	if bulge := r - c.radiusAt(math.Atan2(p[2], p[0]), p[1]); bulge > 0.01 {
 		through += light * 0.3 * smoothstep(0.01, 0.07, bulge) * math.Exp(-math.Max(0, -p[1])*0.6)
 	}
 	if r > 0.8 && p[1] > -0.35 {
-		through += light * 0.12 // the thin rim
+		through += light * 0.08 // the thin rim
 	}
-	spec := math.Pow(math.Max(0, n.Dot(L.Sub(dir).Norm())), 12) * 0.35 * light // drips and bumps catch it
+	// The flame glints on the rim's lips and the drips' tops, near it.
+	spec := math.Pow(math.Max(0, n.Dot(L.Sub(dir).Norm())), 24) * 1.3 * light * atten * smoothstep(-0.7, 0.05, p[1])
 	// A faint fill from the front left, fading down the column: the
 	// drips and bumps near the top show their form, the rest of the
 	// column fades into the dark.
 	fill := 0.14 * math.Max(0, n.Dot(Vec3{-0.6, 0.3, 0.75}.Norm())) * math.Exp(math.Min(0, p[1])*0.9)
-	i := 0.03 + light*diff*atten*0.95 + through + spec + fill
+	i := 0.03 + light*diff*atten*0.6 + through + fill
+	if spec > 0.4 {
+		return '@', 231 // a glint of the flame
+	}
+	i += spec * 0.6
 	const solid = "=+*#%@"
 	return solid[int(clamp01(i)*5+0.5)], mzPick(waxRamp, i)
 }
