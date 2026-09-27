@@ -5,12 +5,11 @@ import (
 	"testing"
 )
 
-// The wax cycles: over four minutes, blob after blob pinches off the pool,
-// rises high in the bottle, sinks and melts back in, and the wax is
-// conserved.
+// The wax cycles all the way up: over four minutes, blob after blob
+// pinches off the pool, rises near the top of the bottle, sinks and melts
+// back in, and no wax is lost.
 func TestLavaCycles(t *testing.T) {
-	l := &lavalamp{rng: rand.New(rand.NewSource(2)), up: [2]float64{0, 1}}
-	l.layout(64, 44)
+	l := &lavalamp{rng: rand.New(rand.NewSource(2))}
 	l.fillWax()
 	wax := func() float64 {
 		w := l.pool
@@ -20,32 +19,29 @@ func TestLavaCycles(t *testing.T) {
 		return w
 	}
 	start := wax()
-	span := l.y1 - l.y0
-	highest := map[*blob]bool{}
-	rose, melted := 0, 0
-	seen := map[float64]bool{} // blobs by radius, to count each once
+	span := lavaCapBot - lavaBaseTop
+	seen := map[float64]bool{}
+	high, melted := 0, 0
 	for f := 0; f < 30*240; f++ {
 		n := len(l.blobs)
 		for s := 0; s < 3; s++ {
-			l.step(1.0/90, [2]float64{}, float64(f)/30)
+			l.step(1.0/90, Vec3{}, float64(f)/30)
 		}
 		if len(l.blobs) < n {
 			melted += n - len(l.blobs)
 		}
-		for i := range l.blobs {
-			b := &l.blobs[i]
-			if (b.y-l.y0)/span > 0.7 && !seen[b.r] {
+		for _, b := range l.blobs {
+			if (b.y-lavaBaseTop)/span > 0.85 && !seen[b.r] {
 				seen[b.r] = true
-				rose++
+				high++
 			}
 		}
 	}
-	_ = highest
-	t.Logf("%d blobs rose high, %d melted back in", rose, melted)
-	if rose < 10 || melted < 10 {
-		t.Errorf("only %d rose high and %d melted back in four minutes", rose, melted)
+	t.Logf("%d blobs reached the top, %d melted back in", high, melted)
+	if high < 10 || melted < 10 {
+		t.Errorf("in four minutes only %d reached the top and %d melted back", high, melted)
 	}
 	if end := wax(); end < start*0.999 || end > start*1.001 {
-		t.Errorf("wax %.1f became %.1f", start, end)
+		t.Errorf("wax %.4f became %.4f", start, end)
 	}
 }

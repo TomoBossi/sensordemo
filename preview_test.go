@@ -41,6 +41,12 @@ func TestPreview(t *testing.T) {
 		f.Resize(w, h) // clears, as each tick does
 		d.Draw(f.View(0, 0, w, h), ss, float64(i)/30, 1.0/30)
 	}
+	writePNG(&f, p[4])
+}
+
+// writePNG saves a frame as an image in its terminal colors.
+func writePNG(f *Frame, path string) {
+	w, h := f.W, f.H
 	const cw, ch = 8, 16
 	img := image.NewRGBA(image.Rect(0, 0, w*cw, h*ch))
 	for y := 0; y < h; y++ {
@@ -58,7 +64,7 @@ func TestPreview(t *testing.T) {
 			}
 		}
 	}
-	out, _ := os.Create(p[4])
+	out, _ := os.Create(path)
 	defer out.Close()
 	png.Encode(out, img)
 }
