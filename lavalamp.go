@@ -33,7 +33,9 @@ func init() {
 // base) to 1 (the top of the cap).
 type lavalamp struct {
 	blobs []blob
-	pool  float64 // wax in the pool on the bulb, as radius squared
+	pool  float64 // wax in the pool on the bulb, as radius cubed
+	ids   int
+	shook float64 // until a shake may split the wax again
 	next  float64 // when the next blob pinches off
 	rng   *rand.Rand
 	kick  float64
@@ -51,8 +53,13 @@ type lavalamp struct {
 type blob struct {
 	x, y, z    float64
 	vx, vy, vz float64
-	r          float64
+	r          float64 // radius: the cube root of vol
+	vol        float64 // wax, as radius cubed
 	temp       float64 // 0 cold .. 1 hot
+	target     float64 // growing out of the pool, to this much wax
+	melting    bool    // sunk to the pool, melting into it
+	apart      float64 // seconds before it may merge again (just split)
+	id         int
 }
 
 // lavaT is the metaball field's value at a lone blob's radius: (3/4)^3.
@@ -87,8 +94,8 @@ func (l *lavalamp) Setup(ss *Streams) ([]*Gauge, error) {
 func (l *lavalamp) Help() []string {
 	return []string{
 		"The bulb warms the wax until a blob pinches off and rises; at the top it cools and sinks back into the pool.",
-		"The lamp stays put in the room: turn the phone to walk around it and watch the light play on the glass. Shake to stir.",
-		"r  face it again    n  fresh wax    space  stir",
+		"The lamp stays put in the room: turn the phone to walk around it and watch the light play on the glass. Shake it hard to break the wax into smaller blobs; they merge again as they meet.",
+		"r  face it again    n  fresh wax    space  shake",
 	}
 }
 
@@ -171,21 +178,29 @@ func inLiquid(p Vec3) bool {
 // fillWax pours fresh wax: most of it in the pool, two blobs on their way.
 func (l *lavalamp) fillWax() {
 	l.blobs = l.blobs[:0]
-	l.pool = 6 * 0.1 * 0.1
+	l.pool = 18 * math.Pow(0.1, 3)
 	for i := 0; i < 2; i++ {
 		a := l.rng.Float64() * 2 * math.Pi
-		l.blobs = append(l.blobs, blob{
+		r := 0.08 + 0.03*l.rng.Float64()
+		l.blobs = append(l.blobs, l.newBlob(blob{
 			x: 0.12 * math.Cos(a), z: 0.12 * math.Sin(a), y: -0.2 + 0.5*float64(i),
-			r: 0.08 + 0.04*l.rng.Float64(), temp: 0.9 - 0.2*float64(i),
-		})
+			vol: r * r * r, temp: 0.9 - 0.2*float64(i),
+		}))
 	}
 	l.next = 0
+}
+
+func (l *lavalamp) newBlob(b blob) blob {
+	l.ids++
+	b.id = l.ids
+	b.r = math.Cbrt(b.vol)
+	return b
 }
 
 // poolBlobs is the pool: three low blobs around the axis, sized by the
 // wax in it, swelling gently.
 func (l *lavalamp) poolBlobs(t float64) [3]blob {
-	rp := math.Sqrt(l.pool/2.4) + 0.02
+	rp := math.Cbrt(l.pool/3)*1.15 + 0.02
 	var out [3]blob
 	for i := range out {
 		a := float64(i)*2*math.Pi/3 + 0.3
@@ -205,21 +220,52 @@ func (l *lavalamp) Draw(v *View, ss *Streams, t, dt float64) {
 	}
 	dt = math.Min(dt, 0.1)
 	l.look(ss)
-	// A shake stirs, in the lamp's frame.
-	var stir Vec3
+	// A hard shake breaks the wax into smaller blobs.
+	l.shook -= dt
 	if s := ss.Get("linear_acceleration"); s != nil {
 		if r := s.Read(); r.OK && len(r.V) >= 3 {
-			stir = l.pose.T().Apply(toScreen(ss, r.V)).Scale(-0.05)
+			if a := l.pose.T().Apply(toScreen(ss, r.V)); a.Len() > 7 && l.shook <= 0 {
+				l.split(a.Scale(-1/a.Len()), t)
+			}
 		}
 	}
 	if l.kick > 0 {
-		l.kick -= dt
-		stir = Vec3{0.8 * math.Sin(t*31), 0.5 * math.Cos(t*23), 0.8 * math.Cos(t*29)}
+		l.kick = 0
+		l.split(Vec3{0, 1, 0}, t)
 	}
 	for s := 0; s < 3; s++ {
-		l.step(dt/3, stir, t)
+		l.step(dt/3, t)
 	}
 	l.render(v, t)
+}
+
+// split breaks every free blob of some size into two or three, flung
+// apart a little (and toward push); they may merge again once they meet,
+// a moment later. A blob also tears off the pool.
+func (l *lavalamp) split(push Vec3, t float64) {
+	l.shook = 0.6
+	var out []blob
+	for _, b := range l.blobs {
+		if b.target > 0 || b.melting || b.r < 0.05 {
+			out = append(out, b)
+			continue
+		}
+		n := 2
+		if b.r > 0.085 {
+			n = 3
+		}
+		for k := 0; k < n; k++ {
+			d := Vec3{l.rng.NormFloat64(), l.rng.NormFloat64(), l.rng.NormFloat64()}.Norm()
+			c := b
+			c.vol = b.vol / float64(n)
+			c.x, c.y, c.z = b.x+d[0]*b.r*0.5, b.y+d[1]*b.r*0.5, b.z+d[2]*b.r*0.5
+			c.vx, c.vy, c.vz = b.vx+d[0]*0.25+push[0]*0.12, b.vy+d[1]*0.25+push[1]*0.12, b.vz+d[2]*0.25+push[2]*0.12
+			c.apart = 2
+			out = append(out, l.newBlob(c))
+		}
+	}
+	l.blobs = out
+	l.next = t // and one tears off the pool
 }
 
 // look sets the pose from the phone's orientation, as the donut does: the
@@ -251,50 +297,96 @@ func (l *lavalamp) look(ss *Streams) {
 	}
 }
 
-// step pinches blobs off the pool, lifts and cools them, and melts the
-// ones that sink back into it. Heat comes only from the bulb, so there's
-// no height where a blob could balance and park.
-func (l *lavalamp) step(h float64, stir Vec3, t float64) {
+// step pinches blobs off the pool, lifts and cools them, merges those
+// that press together, and melts the ones that sink back into the pool.
+// Heat comes only from the bulb, so there's no height where a blob could
+// balance and park. A new blob grows out of the pool, and a sinking one
+// melts into it, over a second or so: the pool changes smoothly.
+func (l *lavalamp) step(h, t float64) {
 	pool := l.poolBlobs(t)
 	top := lavaBaseTop + pool[0].r*0.9
 	span := lavaCapBot - lavaBaseTop
-	if t >= l.next && l.pool > 0.012 {
-		r := 0.07 + 0.05*l.rng.Float64()
-		if r*r < l.pool*0.6 {
-			l.pool -= r * r
+	if t >= l.next && len(l.blobs) < 18 {
+		r := 0.065 + 0.05*l.rng.Float64()
+		if v := r * r * r; v < l.pool*0.45 {
+			l.pool -= 1e-6 // the speck it starts from
 			a := l.rng.Float64() * 2 * math.Pi
-			l.blobs = append(l.blobs, blob{x: 0.1 * math.Cos(a), z: 0.1 * math.Sin(a), y: top - r*0.2, r: r, temp: 1})
+			l.blobs = append(l.blobs, l.newBlob(blob{x: 0.11 * math.Cos(a), z: 0.11 * math.Sin(a), y: top, vol: 1e-6, target: v, temp: 1}))
 		}
-		l.next = t + 3 + 4*l.rng.Float64()
+		l.next = t + 1.4 + 1.8*l.rng.Float64()
 	}
 	for i := 0; i < len(l.blobs); i++ {
 		b := &l.blobs[i]
+		switch {
+		case b.target > 0: // growing out of the pool, drawing its wax
+			dv := math.Min(math.Min(b.target-b.vol, b.target*h/1.5), l.pool)
+			b.vol += dv
+			l.pool -= dv
+			b.r = math.Cbrt(b.vol)
+			grown := b.vol / b.target
+			b.y = top + b.r*(grown-0.4)
+			b.vx, b.vy, b.vz, b.temp = 0, 0, 0, 1
+			if grown >= 0.999 || dv <= 0 {
+				b.target, b.vy = 0, 0.02
+			}
+			continue
+		case b.melting: // melting into the pool
+			dv := math.Min(b.vol, (b.vol*1.4+2e-5)*h)
+			b.vol -= dv
+			l.pool += dv
+			b.r = math.Cbrt(b.vol)
+			b.y += (top - b.r*0.3 - b.y) * math.Min(1, h*3)
+			if b.vol < 3e-6 {
+				l.pool += b.vol
+				l.blobs = append(l.blobs[:i], l.blobs[i+1:]...)
+				i--
+			}
+			continue
+		}
 		u := (b.y - lavaBaseTop) / span
-		b.temp -= b.temp * h * (0.012 + 0.05*u*u) // the liquid cools it, most up high
-		lift := (b.temp - 0.45) * 0.42            // warm wax is lighter than the liquid
-		b.vy += (lift + stir[1]) * h
-		b.vx += (stir[0] + 0.02*math.Sin(t*0.3+float64(i)*1.7)) * h
-		b.vz += (stir[2] + 0.02*math.Cos(t*0.27+float64(i)*2.3)) * h
+		// The liquid cools it, much faster up high, so it doesn't linger.
+		b.temp -= b.temp * h * (0.012 + 0.2*u*u*u)
+		lift := (b.temp - 0.45) * 0.42 // warm wax is lighter than the liquid
+		b.vy += lift * h
+		b.vx += 0.02 * math.Sin(t*0.3+float64(b.id)*1.7) * h
+		b.vz += 0.02 * math.Cos(t*0.27+float64(b.id)*2.3) * h
 		drag := math.Exp(-1.6 * h)
 		b.vx, b.vy, b.vz = b.vx*drag, b.vy*drag, b.vz*drag
 		b.x += b.vx * h
 		b.y += b.vy * h
 		b.z += b.vz * h
-		if b.vy < 0 && b.temp < 0.45 && b.y < top+b.r*0.2 { // sunk to the pool: it melts in
-			l.pool += b.r * b.r
-			l.blobs = append(l.blobs[:i], l.blobs[i+1:]...)
-			i--
+		b.apart -= h
+		if b.vy < 0 && b.temp < 0.45 && b.y < top+b.r*0.3 {
+			b.melting = true
 		}
 	}
-	// Blobs make room for each other, softly.
-	for i := range l.blobs {
+	// Free blobs make room for each other softly, and merge where they
+	// press well into each other (not too big a blob, and not while just
+	// split).
+	free := func(b *blob) bool { return b.target == 0 && !b.melting }
+	for i := 0; i < len(l.blobs); i++ {
 		for j := i + 1; j < len(l.blobs); j++ {
 			a, b := &l.blobs[i], &l.blobs[j]
+			if !free(a) || !free(b) {
+				continue
+			}
 			d := Vec3{b.x - a.x, b.y - a.y, b.z - a.z}
 			dist := d.Len()
-			min := 0.7 * (a.r + b.r)
-			if dist < min && dist > 1e-6 {
-				f := (min - dist) / min * 0.4 * h / dist
+			sum := a.r + b.r
+			if dist < 0.55*sum && a.apart <= 0 && b.apart <= 0 && a.vol+b.vol < math.Pow(0.15, 3) {
+				v := a.vol + b.vol
+				wa, wb := a.vol/v, b.vol/v
+				a.x, a.y, a.z = a.x*wa+b.x*wb, a.y*wa+b.y*wb, a.z*wa+b.z*wb
+				a.vx, a.vy, a.vz = a.vx*wa+b.vx*wb, a.vy*wa+b.vy*wb, a.vz*wa+b.vz*wb
+				a.temp = a.temp*wa + b.temp*wb
+				a.vol = v
+				a.r = math.Cbrt(v)
+				l.blobs = append(l.blobs[:j], l.blobs[j+1:]...)
+				j--
+				continue
+			}
+			if min := 0.75 * sum; dist < min && dist > 1e-6 {
+				f := (min - dist) / min * 0.25 * h / dist
 				a.vx, a.vy, a.vz = a.vx-d[0]*f, a.vy-d[1]*f, a.vz-d[2]*f
 				b.vx, b.vy, b.vz = b.vx+d[0]*f, b.vy+d[1]*f, b.vz+d[2]*f
 			}
@@ -303,6 +395,9 @@ func (l *lavalamp) step(h float64, stir Vec3, t float64) {
 	// The glass: blobs squeeze against it, rest at the top and bottom.
 	for i := range l.blobs {
 		b := &l.blobs[i]
+		if !free(b) {
+			continue
+		}
 		b.y = math.Max(lavaBaseTop+b.r*0.4, math.Min(lavaCapBot-b.r*0.5, b.y))
 		if b.y >= lavaCapBot-b.r*0.5 {
 			b.vy = math.Min(b.vy, 0)
@@ -352,19 +447,40 @@ func (l *lavalamp) render(v *View, t float64) {
 	tanY := 1.18 / lavaDist
 	tanX := tanY * float64(w) / (2 * float64(h))
 	cells := make([]artCell, w*h)
+	parts := make([]int8, w*h)
+	colors := make([][3]float64, w*h)
 	parallelRows(h, func(y int) {
 		for x := 0; x < w; x++ {
 			u := (float64(x)+0.5)/float64(w)*2 - 1
 			vv := 1 - (float64(y)+0.5)/float64(h)*2
 			dir := back.Scale(-1).Add(right.Scale(u * tanX)).Add(up.Scale(vv * tanY)).Norm()
-			rgb, emitted, hit := l.trace(eye, dir, wax, t)
+			rgb, emitted, part := l.trace(eye, dir, wax, t)
 			i := y*w + x
 			l.emit[i] = emitted
-			if hit {
+			parts[i] = int8(part)
+			if part != 0 {
 				cells[i] = lavaCell(rgb)
+				colors[i] = rgb
 			}
 		}
 	})
+	// A faint line along the glass's outline: its sides, where the room
+	// shows next to it. It only adds light.
+	for i, p := range parts {
+		x := i % w
+		if p != 2 {
+			continue
+		}
+		left, right := x > 0 && parts[i-1] == 0, x < w-1 && parts[i+1] == 0
+		if !left && !right {
+			continue
+		}
+		c := colors[i]
+		for k, e := range [3]float64{0.3, 0.34, 0.42} {
+			c[k] = math.Max(c[k], e)
+		}
+		cells[i] = artCell{"()"[boolIdx(right)], rgb256(c), false}
+	}
 	// The room behind: lit by what the lamp gives off, blurred.
 	glow := l.roomGlow()
 	for i := range cells {
@@ -460,8 +576,9 @@ func env(r Vec3) float64 {
 
 // trace follows a ray: the chrome, or the glass's reflection and then the
 // glowing liquid and the wax. It returns the color, what the lamp itself
-// emitted along the ray (for the room's glow), and whether it hit the lamp.
-func (l *lavalamp) trace(eye, dir Vec3, wax []blob, t float64) ([3]float64, [3]float64, bool) {
+// emitted along the ray (for the room's glow), and the part it hit (0
+// none, 1 base, 2 glass, 3 cap).
+func (l *lavalamp) trace(eye, dir Vec3, wax []blob, t float64) ([3]float64, [3]float64, int) {
 	var none [3]float64
 	tt := lavaDist - 1.2
 	var p Vec3
@@ -475,11 +592,11 @@ func (l *lavalamp) trace(eye, dir Vec3, wax []blob, t float64) ([3]float64, [3]f
 		}
 		tt += math.Max(d, 0.003)
 		if tt > lavaDist+1.3 {
-			return none, none, false
+			return none, none, 0
 		}
 	}
 	if part == 0 {
-		return none, none, false
+		return none, none, 0
 	}
 	n := lampNormal(p)
 	refl := dir.Sub(n.Scale(2 * dir.Dot(n)))
@@ -489,15 +606,17 @@ func (l *lavalamp) trace(eye, dir Vec3, wax []blob, t float64) ([3]float64, [3]f
 		if part == 1 && p[1] > -0.93 && p[1] < -0.84 && math.Mod(math.Atan2(p[2], p[0])*9+20, 1) < 0.4 {
 			c = [3]float64{0.25, 0.08, 0.02} // vents, the bulb glowing through
 		}
-		return c, none, true
+		return c, none, part
 	}
 	// Glass: its reflection, strong at grazing angles.
 	cos := math.Abs(n.Dot(dir))
 	fres := 0.05 + 0.95*math.Pow(1-cos, 4)
 	e := env(refl)
+	// Faint highlights of the room's lights on the glass, over the glow.
+	shine := 0.3*math.Pow(math.Max(0, refl.Dot(lavaRoom)), 40) + 0.15*math.Pow(math.Max(0, refl.Dot(Vec3{0.7, 0.2, 0.7}.Norm())), 30)
 	var rgb [3]float64
 	for c := 0; c < 3; c++ {
-		rgb[c] = fres * e * 0.9
+		rgb[c] = fres*e*0.9 + shine*[3]float64{0.85, 0.9, 1}[c]
 	}
 	// Through the liquid.
 	var emitted [3]float64
@@ -519,7 +638,7 @@ func (l *lavalamp) trace(eye, dir Vec3, wax []blob, t float64) ([3]float64, [3]f
 				emitted[k] += trans * c[k]
 				rgb[k] += trans * c[k]
 			}
-			return rgb, emitted, true
+			return rgb, emitted, 2
 		}
 		// The liquid glows: most by the bulb, and around hot wax.
 		u := (q[1] - lavaBaseTop) / (lavaCapBot - lavaBaseTop)
@@ -534,7 +653,7 @@ func (l *lavalamp) trace(eye, dir Vec3, wax []blob, t float64) ([3]float64, [3]f
 		}
 		trans *= math.Exp(-1.1 * ds)
 	}
-	return rgb, emitted, true
+	return rgb, emitted, 2
 }
 
 // shadeWax colors the wax where a ray meets it: lit from below by the
