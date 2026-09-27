@@ -12,6 +12,12 @@ type Frame struct {
 	chars []byte
 	fg    []uint8
 	buf   bytes.Buffer
+
+	// What the terminal shows now, to send only what changed.
+	sentC []byte
+	sentF []uint8
+	sentW int
+	sentH int
 }
 
 func (f *Frame) Resize(w, h int) {
@@ -59,36 +65,76 @@ func (v *View) Text(x, y int, s string, fg uint8) {
 	}
 }
 
-// Flush draws the whole frame in one write, recolored by the palette. Color
-// escapes are emitted only where the color changes.
+// Flush brings the terminal up to date with the frame, in one write: only
+// the runs of characters that changed since the last Flush (the whole
+// screen the first time, and after a resize), with color escapes only
+// where the color changes. Nothing changed, nothing is written. Terminals
+// draw slowly, so this is where small fonts get their frame rate back.
 func (f *Frame) Flush(w interface{ Write([]byte) (int, error) }, pal *palette) {
 	b := &f.buf
 	b.Reset()
-	b.WriteString("\x1b[H")
-	cur := uint8(0)
-	for y := 0; y < f.H; y++ {
-		if y > 0 {
-			b.WriteString("\r\n")
+	n := f.W * f.H
+	full := f.sentW != f.W || f.sentH != f.H || len(f.sentC) != n
+	if full {
+		f.sentC, f.sentF = make([]byte, n), make([]uint8, n)
+		f.sentW, f.sentH = f.W, f.H
+	}
+	mapped := func(i int) uint8 {
+		if pal == nil {
+			return 0
 		}
-		row := f.chars[y*f.W : (y+1)*f.W]
-		for x, c := range row {
-			if pal != nil {
-				if fg := pal.Map(f.fg[y*f.W+x]); fg != cur && c != ' ' {
-					cur = fg
-					if fg == 0 {
-						b.WriteString("\x1b[39m")
-					} else {
-						b.WriteString("\x1b[38;5;")
-						b.WriteString(strconv.Itoa(int(fg)))
-						b.WriteByte('m')
-					}
+		return pal.Map(f.fg[i])
+	}
+	same := func(i int) bool {
+		c := f.chars[i]
+		return !full && c == f.sentC[i] && (c == ' ' || mapped(i) == f.sentF[i])
+	}
+	cur := uint8(0)
+	put := func(i int) {
+		c := f.chars[i]
+		if fg := mapped(i); fg != cur && c != ' ' {
+			cur = fg
+			if fg == 0 {
+				b.WriteString("\x1b[39m")
+			} else {
+				b.WriteString("\x1b[38;5;")
+				b.WriteString(strconv.Itoa(int(fg)))
+				b.WriteByte('m')
+			}
+		}
+		b.WriteByte(c)
+		f.sentC[i], f.sentF[i] = c, mapped(i)
+	}
+	const bridge = 5 // rewriting a short unchanged gap is cheaper than a jump
+	for y := 0; y < f.H; y++ {
+		row := y * f.W
+		for x := 0; x < f.W; {
+			if same(row + x) {
+				x++
+				continue
+			}
+			// A run of changes, bridging short gaps.
+			end := x
+			for e := x + 1; e < f.W && e-end <= bridge; e++ {
+				if !same(row + e) {
+					end = e
 				}
 			}
-			b.WriteByte(c)
+			b.WriteString("\x1b[")
+			b.WriteString(strconv.Itoa(y + 1))
+			b.WriteByte(';')
+			b.WriteString(strconv.Itoa(x + 1))
+			b.WriteByte('H')
+			for i := x; i <= end; i++ {
+				put(row + i)
+			}
+			x = end + 1
 		}
 	}
-	if pal != nil && cur != 0 {
+	if cur != 0 {
 		b.WriteString("\x1b[39m")
 	}
-	w.Write(b.Bytes())
+	if b.Len() > 0 {
+		w.Write(b.Bytes())
+	}
 }
