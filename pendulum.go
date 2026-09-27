@@ -35,7 +35,12 @@ type pendulum struct {
 	ratio  int        // index into pendRatios
 	sand   float64    // what's left in the funnel, 0..1
 	shake  float64
-	stream float64 // how hard sand is falling, eased
+	stream float64    // how hard sand is falling, eased
+	acc    [2]float64 // the tray's acceleration, smoothed
+
+	// Where sand fell since it last settled, in grid cells.
+	dirty              bool
+	di0, di1, dj0, dj1 int
 }
 
 const (
@@ -112,6 +117,28 @@ func (s *pendulum) swing() {
 	ph := (0.1 + 0.8*s.rng.Float64()) * math.Pi
 	s.p = [2]float64{side * ax, az * math.Cos(ph)}
 	s.v = [2]float64{0, az * wz * math.Sin(ph)}
+	s.fit(0.84)
+}
+
+// fit scales the swing so that, as it will go, it never reaches further
+// out than reach: a Lissajous figure's corners come out further than
+// either swing alone, and the funnel would hit the wall.
+func (s *pendulum) fit(reach float64) {
+	for try := 0; try < 8; try++ { // friction isn't proportional: iterate
+		p, v := s.p, s.v
+		far := 0.0
+		for i := 0; i < 240*40; i++ {
+			s.move(1.0/240, [2]float64{})
+			far = math.Max(far, math.Hypot(s.p[0], s.p[1]))
+		}
+		s.p, s.v = p, v
+		if far <= reach {
+			return
+		}
+		k := reach / far * 0.995
+		s.p = [2]float64{p[0] * k, p[1] * k}
+		s.v = [2]float64{v[0] * k, v[1] * k}
+	}
 }
 
 func (s *pendulum) omegas() (float64, float64) {
@@ -119,9 +146,20 @@ func (s *pendulum) omegas() (float64, float64) {
 	return wx, wx * pendRatios[s.ratio].r * 1.006 // a touch off: the figure turns
 }
 
-// step moves the funnel under the push (the tray's acceleration, which it
-// lags) and drops its sand.
+// step moves the funnel under the push and drops its sand.
 func (s *pendulum) step(dt float64, push [2]float64) {
+	s.move(dt, push)
+	// The funnel closes as the swing dies away (a finger over its tip),
+	// or the middle would fill with sand.
+	if open := smoothstep(0.1, 0.22, s.swingSize()); s.sand > 0 && open > 0 {
+		s.sand = math.Max(0, s.sand-dt*open/180)
+		s.deposit(s.p[0], s.p[1], pendFlow*dt*open)
+	}
+}
+
+// move swings the funnel under the push (the tray's acceleration, which
+// it lags).
+func (s *pendulum) move(dt float64, push [2]float64) {
 	wx, wz := s.omegas()
 	// Friction where the cords hang, nearly constant, so the swing shrinks
 	// by the same step each time round and the lines lie evenly spaced;
@@ -134,20 +172,16 @@ func (s *pendulum) step(dt float64, push [2]float64) {
 		s.v[k] += (-w[k]*w[k]*s.p[k] + f - push[k]) * dt
 		s.p[k] += s.v[k] * dt
 	}
-	// The funnel can't reach past the tray's wall.
-	if r := math.Hypot(s.p[0], s.p[1]); r > 0.9 {
+	// Pushed too far, the funnel meets the tray's wall: softly, a stiff
+	// cushion turning it back, not a bounce.
+	if r := math.Hypot(s.p[0], s.p[1]); r > 0.86 {
 		nx, nz := s.p[0]/r, s.p[1]/r
-		s.p[0], s.p[1] = nx*0.9, nz*0.9
+		in := (r - 0.86) * 400
 		if vn := s.v[0]*nx + s.v[1]*nz; vn > 0 {
-			s.v[0] -= 1.6 * vn * nx
-			s.v[1] -= 1.6 * vn * nz
+			in += vn * 25
 		}
-	}
-	// The funnel closes as the swing dies away (a finger over its tip),
-	// or the middle would fill with sand.
-	if open := smoothstep(0.1, 0.22, s.swingSize()); s.sand > 0 && open > 0 {
-		s.sand = math.Max(0, s.sand-dt*open/180)
-		s.deposit(s.p[0], s.p[1], pendFlow*dt*open)
+		s.v[0] -= nx * in * dt
+		s.v[1] -= nz * in * dt
 	}
 }
 
@@ -187,6 +221,22 @@ func (s *pendulum) deposit(x, z, amt float64) {
 		}
 	}
 	s.relax(i0-rad-3, i0+rad+3, j0-rad-3, j0+rad+3, 2)
+	if !s.dirty {
+		s.di0, s.di1, s.dj0, s.dj1, s.dirty = i0, i0, j0, j0, true
+	}
+	s.di0, s.di1 = min(s.di0, i0), max(s.di1, i0)
+	s.dj0, s.dj1 = min(s.dj0, j0), max(s.dj1, j0)
+}
+
+// settle lets the sand slide where it fell lately, and around it (a
+// heap's slope spreads a cell a pass), rather than over the whole tray.
+func (s *pendulum) settle() {
+	if !s.dirty {
+		return
+	}
+	const m = 24
+	s.relax(s.di0-m, s.di1+m, s.dj0-m, s.dj1+m, 1)
+	s.dirty = false
 }
 
 // inTray reports whether grid cell i, j lies on the tray's floor.
@@ -259,13 +309,18 @@ func (s *pendulum) Draw(v *View, ss *Streams, t, dt float64) {
 	if st := ss.Get("linear_acceleration"); st != nil {
 		if r := st.Read(); r.OK && len(r.V) >= 3 {
 			a := toScreen(ss, r.V)
-			m := math.Hypot(a[0], a[1])
-			if m > 0.25 { // below that, it's the hand's tremor
-				g := (m - 0.25) / m * 5 // metres to tray radii (about 20 cm)
-				push = [2]float64{a[0] * g, -a[1] * g}
+			// Smoothed a little: the sensor's jitter, and the jolts it
+			// reads when the phone turns, aren't pushes.
+			k := math.Min(1, dt/0.06)
+			s.acc[0] += (a[0] - s.acc[0]) * k
+			s.acc[1] += (a[1] - s.acc[1]) * k
+			m := math.Hypot(s.acc[0], s.acc[1])
+			if m > 0.45 { // below that, it's the hand's tremor
+				g := (m - 0.45) / m * 5 // metres to tray radii (about 20 cm)
+				push = [2]float64{s.acc[0] * g, -s.acc[1] * g}
 			}
-			if m > 12 {
-				s.shake += (m - 12) * dt
+			if raw := math.Hypot(a[0], a[1]); raw > 12 {
+				s.shake += (raw - 12) * dt
 			}
 		}
 	}
@@ -273,7 +328,7 @@ func (s *pendulum) Draw(v *View, ss *Streams, t, dt float64) {
 	for i := 0; i < sub; i++ {
 		s.step(dt/sub, push)
 	}
-	s.relaxAll()
+	s.settle()
 	// A push is brief; a shake goes on, and levels the sand.
 	if s.shake > 0.2 {
 		s.level(math.Min(0.8, s.shake-0.2))
