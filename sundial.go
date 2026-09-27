@@ -60,11 +60,15 @@ var (
 )
 
 func (s *sundial) Setup(ss *Streams) ([]*Gauge, error) {
+	// Without where you are, there's no dial to lay out (sensord says why:
+	// location turned off, say).
+	if _, err := ss.Subscribe("location", 0.1); err != nil {
+		return nil, err
+	}
 	st, err := ss.Subscribe("rotation_vector", 30)
 	if err != nil {
 		return nil, err
 	}
-	ss.Subscribe("location", 0.1)
 	return gaugesFor(st, 3), nil
 }
 

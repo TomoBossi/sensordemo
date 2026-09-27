@@ -40,7 +40,12 @@ type Reading struct {
 	Arrived time.Time
 }
 
+// Read returns the latest reading. A stream that was never subscribed
+// (nil, as Get returns for it) reads as nothing yet.
 func (s *Stream) Read() Reading {
+	if s == nil {
+		return Reading{}
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	r := Reading{V: s.last.V, T: s.last.T, OK: s.has, Count: s.count, Arrived: s.arrived}
@@ -52,6 +57,9 @@ func (s *Stream) Read() Reading {
 
 // History returns up to n past readings of value index i, oldest first.
 func (s *Stream) History(i, n int) []float64 {
+	if s == nil {
+		return nil
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	n = min(n, s.histN, histLen)

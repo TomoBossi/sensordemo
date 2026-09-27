@@ -169,7 +169,7 @@ func (p *pond) build(w, h int) {
 		f.dir = p.rng.Float64() * 2 * math.Pi
 		f.depth = 0.2 + 0.6*p.rng.Float64()
 		f.wantDepth = f.depth
-		x, y := p.randomSpot(f.length)
+		x, y := p.randomSpot(f.length * 0.5)
 		for k := range f.pts {
 			s := float64(k) * f.length / (koiSeg - 1)
 			f.pts[k] = [2]float64{x - math.Cos(f.dir)*s, y - math.Sin(f.dir)*s}
@@ -215,14 +215,22 @@ func (p *pond) edgeGrid(x, y float64) float64 {
 	return p.edge[j*p.W+i]
 }
 
+// randomSpot picks a spot in the water at least margin from the bank, or
+// if the pond has none that far in, the deepest it came across.
 func (p *pond) randomSpot(margin float64) (float64, float64) {
-	for tries := 0; ; tries++ {
+	bx, by, be := float64(p.W)/2, float64(p.H), math.Inf(1)
+	for tries := 0; tries < 300; tries++ {
 		x := p.rng.Float64() * float64(p.W)
 		y := p.rng.Float64() * float64(p.H) * 2
-		if p.edgeAt(x, y) < -margin || tries > 200 {
+		e := p.edgeAt(x, y)
+		if e < -margin {
 			return x, y
 		}
+		if e < be {
+			bx, by, be = x, y, e
+		}
 	}
+	return bx, by
 }
 
 // feed scatters a handful of pellets over a spot, each landing with a

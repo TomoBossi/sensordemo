@@ -329,6 +329,11 @@ func (c *candle) Draw(v *View, ss *Streams, t, dt float64) {
 	if c.lit && c.gutter > 0.5 && c.rng.Float64() < dt*8 { // a whipped flame smokes at its tip
 		c.smoke = append(c.smoke, puff{p: Vec3{0.06 + c.sway[0], candleWickTop + c.H*1.05, c.sway[1]}, v: Vec3{0, 1, 0}, life: 1.5})
 	}
+	// The flame's height this frame: a slow breath, quicker tremors in
+	// unsettled air; it draws out when moved up, and a lean shortens it.
+	c.H = 2.0 * (0.25 + 0.75*c.power) * (1 + 0.03*snoise(t*1.3, 0, 0) + 0.12*c.turb*snoise(t*7, 3, 0) + c.stretch)
+	c.H *= (1 - 0.15*c.gutter) / (1 + 0.25*math.Hypot(c.sway[0], c.sway[1]))
+	c.t = t
 	for i := 0; i < len(c.smoke); i++ {
 		p := &c.smoke[i]
 		p.age += dt
@@ -549,11 +554,7 @@ func (c *candle) render(v *View, t float64) {
 	tanY := 2.9 / candleDist
 	tanX := tanY * float64(w) / (2 * float64(h))
 
-	// A slow breath in its height, quicker tremors in unsettled air; the
-	// flame draws out when moved up, and a lean shortens it.
-	H := 2.0 * (0.25 + 0.75*c.power) * (1 + 0.03*snoise(t*1.3, 0, 0) + 0.12*c.turb*snoise(t*7, 3, 0) + c.stretch)
-	H *= (1 - 0.15*c.gutter) / (1 + 0.25*math.Hypot(c.sway[0], c.sway[1]))
-	c.H, c.t = H, t
+	H := c.H
 	light := c.power * (1 - 0.2*c.gutter) * (1 + 0.03*snoise(t*1.1, 9, 0))
 	lamp := Vec3{0.06 + c.sway[0]*0.35, candleWickTop + H*0.35, c.sway[1] * 0.35} // the flame's light
 	// The pool's glint: the flame's bright part, as a line.

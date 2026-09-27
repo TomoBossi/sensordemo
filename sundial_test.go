@@ -69,3 +69,18 @@ func BenchmarkSundial(b *testing.B) {
 		s.render(f.View(0, 0, 88, 75), 73)
 	}
 }
+
+// A stream never subscribed reads as nothing yet, not a crash.
+func TestUnsubscribedStreamReads(t *testing.T) {
+	ss, _ := OpenMock("")
+	if r := ss.Get("location").Read(); r.OK {
+		t.Fatal("a reading from nowhere")
+	}
+	if h := ss.Get("location").History(0, 5); h != nil {
+		t.Fatal("history from nowhere")
+	}
+	s := &sundial{speed: 1}
+	var f Frame
+	f.Resize(60, 30)
+	s.Draw(f.View(0, 0, 60, 30), ss, 0, 1.0/30) // waits for a fix
+}
