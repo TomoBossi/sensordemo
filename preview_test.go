@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 // PREVIEW=demo:WxH:frames:mock:out.png renders a demo's frame as an image,
@@ -35,6 +36,7 @@ func TestPreview(t *testing.T) {
 	if _, err := d.Setup(ss); err != nil {
 		t.Fatal(err)
 	}
+	time.Sleep(50 * time.Millisecond) // the mock's first readings
 	var f Frame
 	f.Resize(w, h)
 	for i := 0; i < frames; i++ {
