@@ -1,1 +1,3 @@
 /sensordemo
+*.test
+*.out
