@@ -71,3 +71,32 @@ func TestPendulumSwingFitsTray(t *testing.T) {
 		}
 	}
 }
+
+// Friction shrinks the swing evenly: as a plain pendulum (1:1) an oval
+// stays the same oval rather than flattening into a line, a Lissajous
+// figure keeps its proportions, and the size goes down steadily.
+func TestPendulumKeepsItsShape(t *testing.T) {
+	for _, c := range []struct {
+		ratio  int
+		ax, az float64
+	}{{3, 0.5, 0.45}, {3, 0.6, 0.2}, {0, 0.6, 0.5}, {2, 0.4, 0.6}} {
+		ss, _ := OpenMock("linear_acceleration=0,0,0")
+		s := &pendulum{}
+		s.Setup(ss)
+		s.ratio = c.ratio
+		wx, wz := s.omegas()
+		s.p, s.v = [2]float64{c.ax, 0}, [2]float64{0, c.az * wz}
+		size0 := math.Hypot(c.ax, c.az)
+		for i := 0; i < 240*12; i++ {
+			s.move(1.0/240, [2]float64{})
+		}
+		gx, gz := s.axisSwing(0, wx), s.axisSwing(1, wz)
+		if want := c.az / c.ax; math.Abs(gz/gx-want) > 0.03*want {
+			t.Errorf("%s from %.2f x %.2f: after 12 s, %.3f x %.3f (proportion %.3f, was %.3f)",
+				pendRatios[c.ratio].name, c.ax, c.az, gx, gz, gz/gx, want)
+		}
+		if lost := size0 - math.Hypot(gx, gz); math.Abs(lost-0.36) > 0.05 {
+			t.Errorf("%s: shrank %.3f in 12 s, want about 0.36", pendRatios[c.ratio].name, lost)
+		}
+	}
+}

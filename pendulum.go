@@ -17,9 +17,11 @@ func init() {
 
 // pendulum is a funnel of sand on a long cord over a round tray, seen from
 // above at a slant. It swings with one period across and another along
-// (a Blackburn pendulum: the cord splits in a Y below the ceiling), so its
-// path is a Lissajous figure that slowly turns as the two drift apart, and
-// shrinks as the swing dies down. Sand leaks from the funnel's tip and
+// (a Blackburn pendulum: the cord splits in a Y below the ceiling, and
+// swinging along, only the cord below the split swings), so its path is a
+// Lissajous figure that slowly turns as the two drift apart, and shrinks,
+// keeping its shape, as the swing dies down. At 1:1 it's a plain pendulum,
+// which can go round in circles. Sand leaks from the funnel's tip and
 // builds up along the path: ridges where it passed, heaps at the turns
 // where it lingered, sand sliding down wherever it piles steeper than sand
 // can stand. A lamp above lights the relief.
@@ -91,6 +93,7 @@ func (s *pendulum) Setup(ss *Streams) ([]*Gauge, error) {
 func (s *pendulum) Help() []string {
 	return []string{
 		"Move the phone to push the pendulum: the tray moves, the funnel lags and swings. Shake hard to level the sand.",
+		"The cord splits in a Y above the funnel: swinging across, the whole Y swings, slowly; along, only the cord below the split, faster. So it draws Lissajous figures and can't go round in circles, except at 1:1, where it's a plain pendulum.",
 		"space  a fresh swing    f  next ratio    s  smooth the sand and refill",
 	}
 }
@@ -143,6 +146,9 @@ func (s *pendulum) fit(reach float64) {
 
 func (s *pendulum) omegas() (float64, float64) {
 	wx := 2 * math.Pi / 2.4
+	if pendRatios[s.ratio].r == 1 {
+		return wx, wx // a plain pendulum: the same both ways
+	}
 	return wx, wx * pendRatios[s.ratio].r * 1.006 // a touch off: the figure turns
 }
 
@@ -161,15 +167,17 @@ func (s *pendulum) step(dt float64, push [2]float64) {
 // it lags).
 func (s *pendulum) move(dt float64, push [2]float64) {
 	wx, wz := s.omegas()
-	// Friction where the cords hang, nearly constant, so the swing shrinks
-	// by the same step each time round and the lines lie evenly spaced;
-	// stronger for the quicker swing, so both shrink alike and the figure
-	// keeps its shape. And a little drag.
-	const fric, drag = 0.13, 0.01
+	// Friction acts on the swing as a whole, taking the same share of it
+	// both ways, so the figure shrinks evenly and keeps its shape: a
+	// circle stays a circle, a figure the same figure. And it takes the
+	// same off the swing's size each second, as friction at the cords
+	// does, so the lines lie evenly spaced.
+	const shrink = 0.03 // radius a second
 	w := [2]float64{wx, wz}
+	size := math.Hypot(s.axisSwing(0, wx), s.axisSwing(1, wz))
+	g := 2*shrink/math.Max(size, 0.05) + 0.01
 	for k := 0; k < 2; k++ {
-		f := -drag*s.v[k] - fric*w[k]/wx*s.v[k]/math.Max(math.Abs(s.v[k]), 0.05)
-		s.v[k] += (-w[k]*w[k]*s.p[k] + f - push[k]) * dt
+		s.v[k] += (-w[k]*w[k]*s.p[k] - g*s.v[k] - push[k]) * dt
 		s.p[k] += s.v[k] * dt
 	}
 	// Pushed too far, the funnel meets the tray's wall: softly, a stiff
@@ -183,6 +191,12 @@ func (s *pendulum) move(dt float64, push [2]float64) {
 		s.v[0] -= nx * in * dt
 		s.v[1] -= nz * in * dt
 	}
+}
+
+// axisSwing is how wide the funnel swings along axis k (of frequency w),
+// from its energy.
+func (s *pendulum) axisSwing(k int, w float64) float64 {
+	return math.Sqrt(s.p[k]*s.p[k] + s.v[k]*s.v[k]/(w*w))
 }
 
 // swingSize is how wide the funnel swings, from its energy.
@@ -342,9 +356,13 @@ func (s *pendulum) Draw(v *View, ss *Streams, t, dt float64) {
 	s.stream += (flow - s.stream) * math.Min(1, dt*6)
 	area := v.H - 1
 	s.render(v, area, t)
-	line := pendRatios[s.ratio].name + fmt.Sprintf("  sand %d%%", int(s.sand*100+0.5))
+	name := "Y-cord " + pendRatios[s.ratio].name
+	if pendRatios[s.ratio].r == 1 {
+		name = "plain pendulum"
+	}
+	line := name + fmt.Sprintf("  sand %d%%", int(s.sand*100+0.5))
 	if s.sand == 0 {
-		line = pendRatios[s.ratio].name + "  the funnel is empty: s to refill"
+		line = name + "  the funnel is empty: s to refill"
 	}
 	v.Text(max(0, (v.W-len(line))/2), area, line, 244)
 }
@@ -485,8 +503,33 @@ func (s *pendulum) render(v *View, area int, t float64) {
 		lip := bob.Add(Vec3{math.Cos(a) * pendMouth, pendCone, math.Sin(a) * pendMouth})
 		line(lip, top, 250, false)
 	}
-	anchor := Vec3{0, pendTip + pendCone + pendCord, 0}
-	line(top, top.Add(anchor.Sub(top).Norm().Scale(6)), 248, false)
+	// The Y: the cord below the split swings from it; the split swings
+	// only across, with the two cords above it, tied to the ceiling apart
+	// along. (A plain pendulum's cord runs straight up.)
+	r := pendRatios[s.ratio].r
+	rest := pendTip + pendCone + 0.3
+	low := pendCord / (r * r) // the swing along is this long
+	yoke := Vec3{s.p[0] * (pendCord - low) / pendCord, rest + low, 0}
+	ceiling := rest + pendCord
+	visible := func(a, b Vec3) Vec3 { // b, or as far toward it as the camera sees
+		for i := 0; i < 12; i++ {
+			if _, _, ok := proj(b); ok {
+				d := b.Sub(pv.origin)
+				if d.Dot(pv.F) > 0.5 {
+					return b
+				}
+			}
+			b = a.Add(b.Sub(a).Scale(0.5))
+		}
+		return a
+	}
+	line(top, visible(top, yoke), 248, false)
+	if r != 1 {
+		spread := 0.45 * (pendCord - low)
+		for _, side := range []float64{-1, 1} {
+			line(yoke, visible(yoke, Vec3{0, ceiling, side * spread}), 246, false)
+		}
+	}
 	// The stream, from the tip down to the sand.
 	if s.stream > 0.05 {
 		h, _, _ := s.heightAt(bob[0], bob[2])
