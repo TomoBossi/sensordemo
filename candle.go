@@ -200,19 +200,26 @@ func (c *candle) snuffed() {
 	}
 }
 
-// relit stops the smoke at once: what hadn't risen yet never does, what's
-// still low enough to reach the flame is burned away, and the rest thins
-// out quickly.
+// relit stops the smoke coming off the wick: what hadn't risen yet never
+// does. What already rose goes on rising and thinning; the flame burns
+// away whatever of it is inside it, as it grows back (see inFlame).
 func (c *candle) relit() {
 	kept := c.smoke[:0]
 	for _, p := range c.smoke {
-		if p.age < 0 || p.p[1] < candleWickTop+2.8 {
-			continue
+		if p.age >= 0 {
+			kept = append(kept, p)
 		}
-		p.life = math.Min(p.life, p.age+0.8)
-		kept = append(kept, p)
 	}
 	c.smoke = kept
+}
+
+// inFlame reports whether a puff of smoke is inside the burning flame.
+func (c *candle) inFlame(p Vec3) bool {
+	if !c.lit || c.power <= 0 {
+		return false
+	}
+	dx, dz := p[0]-0.06-c.sway[0]*0.5, p[2]-c.sway[1]*0.5
+	return p[1] < candleWickTop+c.H && dx*dx+dz*dz < 0.6*0.6
 }
 
 // look turns the phone's rotation since the reference into a view around
@@ -298,7 +305,9 @@ func (c *candle) Draw(v *View, ss *Streams, t, dt float64) {
 				c.lit = true
 				c.relit()
 			}
-			if near == !c.lit {
+			// How long a hand has kept it out: uncovered after a second of
+			// that, it lights again (so snuffed with a key, it stays out).
+			if near && !c.lit {
 				c.covered += dt
 			} else {
 				c.covered = 0
@@ -326,7 +335,7 @@ func (c *candle) Draw(v *View, ss *Streams, t, dt float64) {
 		if p.age < 0 {
 			continue
 		}
-		if p.age > p.life {
+		if p.age > p.life || c.inFlame(p.p) {
 			c.smoke = append(c.smoke[:i], c.smoke[i+1:]...)
 			i--
 			continue

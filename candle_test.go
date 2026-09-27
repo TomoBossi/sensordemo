@@ -27,9 +27,10 @@ func TestCandleViewBounded(t *testing.T) {
 	}
 }
 
-// Snuffing and relighting quickly leaves no smoke rising through the
-// flame: what hadn't risen never does, what was low is gone.
-func TestCandleRelightStopsSmoke(t *testing.T) {
+// Snuffing and relighting: no more smoke comes off the wick, none stays
+// inside the flame, and the column that already rose above it goes on
+// rising and fading.
+func TestCandleRelightSmoke(t *testing.T) {
 	ss, _ := OpenMock("orient=0,0,0;linear_acceleration=0,0,0;proximity=5")
 	c := &candle{}
 	c.Setup(ss)
@@ -38,23 +39,40 @@ func TestCandleRelightStopsSmoke(t *testing.T) {
 		for i := 0; i < n; i++ {
 			f.Resize(60, 40)
 			c.Draw(f.View(0, 0, 60, 40), ss, float64(i)/30, 1.0/30)
+			for _, p := range c.smoke {
+				if c.lit && c.inFlame(p.p) {
+					t.Fatalf("smoke at %.2f inside the flame (%.2f tall)", p.p[1], c.H)
+				}
+			}
 		}
 	}
 	step(10)
-	for k := 0; k < 4; k++ {
+	for k := 0; k < 4; k++ { // quickly
 		c.Key(' ') // out
 		step(9)
 		c.Key(' ') // lit again
 		for _, p := range c.smoke {
-			if p.age < 0 || p.p[1] < candleWickTop+2.8 {
-				t.Fatalf("round %d: smoke at %.2f (age %.2f) with the flame lit", k, p.p[1], p.age)
+			if p.age < 0 {
+				t.Fatalf("round %d: smoke still to come off the wick after relighting", k)
 			}
 		}
 		step(3)
 	}
-	step(40)
+	step(200)
+	c.Key(' ') // out long enough for a column
+	step(90)
+	if c.lit {
+		t.Fatal("snuffed with the key, it lit again by itself")
+	}
+	c.Key(' ')
+	step(15)
+	above := len(c.smoke)
+	if above < 20 {
+		t.Errorf("only %d puffs of the column survived relighting", above)
+	}
+	step(250)
 	if len(c.smoke) > 0 {
-		t.Errorf("%d puffs still around 1.3 s after relighting", len(c.smoke))
+		t.Errorf("%d puffs still around 8 s later", len(c.smoke))
 	}
 }
 
