@@ -7,15 +7,15 @@ Developed and tested on a Moto G17 Power.
 ```sh
 sensordemo list               # the demos
 sensordemo donut              # a demo by name
-sensordemo gyroscope          # a sensor: picks the demo that uses it
-sensordemo light,proximity    # several sensors: a demo that uses all of them
-sensordemo --gray fluid       # start in grayscale (c cycles palettes)
+sensordemo gyroscope          # a sensor: picks a demo that uses it
+sensordemo light,proximity    # several sensors: picks a demo that uses all of them
+sensordemo --gray fluid       # start in grayscale
 sensordemo hourglass 5m       # some demos take an argument
 ```
 
 Keys shared by every demo: 
 - `q` quit
-- `c` cycle colors
+- `c` cycle color palettes
 - `?` info and help
 
 ## Demos
