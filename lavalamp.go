@@ -600,9 +600,15 @@ func (l *lavalamp) trace(eye, dir Vec3, wax []blob, t float64) ([3]float64, [3]f
 	}
 	n := lampNormal(p)
 	refl := dir.Sub(n.Scale(2 * dir.Dot(n)))
-	if part != 2 { // chrome: the room, mirrored, and a little of the lamp's glow below the cap
+	if part != 2 { // chrome: the room, mirrored, and the lamp's glow where it faces the bottle
 		e := env(refl) + 0.35*math.Max(0, n.Dot(lavaRoom))
 		c := [3]float64{0.8 * e, 0.82 * e, 0.9 * e}
+		if part == 1 { // the base: brushed, it catches the bottle's glow above it, and mirrors it looking up
+			g := smoothstep(-0.98, lavaBaseTop, p[1]) * (0.3 + 0.55*math.Max(0, refl[1]))
+			for k := range c {
+				c[k] += lavaFluid[k] * g
+			}
+		}
 		if part == 1 && p[1] > -0.93 && p[1] < -0.84 && math.Mod(math.Atan2(p[2], p[0])*9+20, 1) < 0.4 {
 			c = [3]float64{0.25, 0.08, 0.02} // vents, the bulb glowing through
 		}
@@ -623,14 +629,20 @@ func (l *lavalamp) trace(eye, dir Vec3, wax []blob, t float64) ([3]float64, [3]f
 	trans := 1.0
 	const ds = 0.022
 	q := p.Add(dir.Scale(lavaGlass * 1.5))
+	wet, floor := false, false
 	for i := 0; i < 70; i++ {
 		q = q.Add(dir.Scale(ds))
 		if !inLiquid(q) {
+			if q[1] <= lavaBaseTop && math.Hypot(q[0], q[2]) < 0.4 {
+				floor = true // down at the bottle's floor, over the bulb
+				break
+			}
 			if i > 2 {
 				break
 			}
 			continue
 		}
+		wet = true
 		f, heat := waxField(wax, q)
 		if f >= lavaT { // the wax
 			c := l.shadeWax(q, dir, wax, heat)
@@ -652,6 +664,18 @@ func (l *lavalamp) trace(eye, dir Vec3, wax []blob, t float64) ([3]float64, [3]f
 			rgb[k] += add
 		}
 		trans *= math.Exp(-1.1 * ds)
+	}
+	// The bottle's floor, right over the bulb, glows brightest: seen
+	// through the liquid, or through bare glass at the very bottom.
+	g := 0.0
+	if floor {
+		g = 1.6 * trans
+	} else if !wet && p[1] < lavaBaseTop+0.2 {
+		g = 1.6 * (1 - smoothstep(lavaBaseTop, lavaBaseTop+0.2, p[1]))
+	}
+	for k := 0; k < 3; k++ {
+		rgb[k] += lavaFluid[k] * g
+		emitted[k] += lavaFluid[k] * g
 	}
 	return rgb, emitted, 2
 }

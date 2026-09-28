@@ -242,6 +242,35 @@ func rasterize(f *Frame, atlas [][]float64, rgb []byte, lut map[uint8][]byte) {
 
 // renderGIF runs a scene and pipes its recorded frames to ffmpeg.
 func renderGIF(t *testing.T, sc gifScene, cols, rows int, atlas [][]float64, path string) error {
+	// A scene that ends when something happens, and fades back into its
+	// start: run it once to find when, then record just that long.
+	if sc.until != nil && sc.fade > 0 {
+		stop, err := runGIF(t, sceneNamed(sc.demo), cols, rows, nil, "", true)
+		if err != nil {
+			return err
+		}
+		sc = sceneNamed(sc.demo)
+		sc.until = nil
+		sc.secs = float64(stop+1)/gifFPS - sc.fade
+	}
+	_, err := runGIF(t, sc, cols, rows, atlas, path, false)
+	return err
+}
+
+// sceneNamed is a fresh copy of a demo's scene (scenes keep state in
+// their closures).
+func sceneNamed(name string) gifScene {
+	for _, sc := range gifScenes() {
+		if sc.demo == name {
+			return sc
+		}
+	}
+	panic("no scene for " + name)
+}
+
+// runGIF runs a scene and pipes its recorded frames to ffmpeg; dry, it
+// only runs it, and returns the recorded frame at which until held.
+func runGIF(t *testing.T, sc gifScene, cols, rows int, atlas [][]float64, path string, dry bool) (int, error) {
 	ss, _ := OpenMock("") // subscriptions stay silent: the script feeds them
 	defer ss.Close()
 	start := sc.start
@@ -262,14 +291,14 @@ func renderGIF(t *testing.T, sc gifScene, cols, rows int, atlas [][]float64, pat
 	defer func() { demoArg = "" }()
 	e := find(sc.demo)
 	if e == nil {
-		return fmt.Errorf("no demo %q", sc.demo)
+		return 0, fmt.Errorf("no demo %q", sc.demo)
 	}
 	d := e.new(sc.specs)
 	// The first readings, so Setup finds the sensors reading.
 	feed := newGIFFeed(ss)
 	gauges, err := d.Setup(ss)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	gauges = append(gauges, screenGauge(ss)...)
 	if sc.setup != nil {
@@ -286,14 +315,22 @@ func renderGIF(t *testing.T, sc gifScene, cols, rows int, atlas [][]float64, pat
 		"-s", fmt.Sprintf("%dx%d", W, H), "-r", fmt.Sprint(gifFPS), "-i", "-", "-filter_complex", vf, "-loop", "0", path}
 	cmd := exec.Command("ffmpeg", args...)
 	cmd.Stderr = os.Stderr
-	pipe, err := cmd.StdinPipe()
-	if err != nil {
-		return err
+	var pipe interface {
+		Write([]byte) (int, error)
+		Close() error
 	}
-	if err := cmd.Start(); err != nil {
-		return err
+	var bw *bufio.Writer
+	if !dry {
+		p, err := cmd.StdinPipe()
+		if err != nil {
+			return 0, err
+		}
+		if err := cmd.Start(); err != nil {
+			return 0, err
+		}
+		pipe = p
+		bw = bufio.NewWriterSize(pipe, 1<<20)
 	}
-	bw := bufio.NewWriterSize(pipe, 1<<20)
 	rgb := make([]byte, W*H*3)
 	rot := make([]byte, W*H*3)
 	lut := map[uint8][]byte{}
@@ -326,6 +363,12 @@ func renderGIF(t *testing.T, sc gifScene, cols, rows int, atlas [][]float64, pat
 		if i < rec {
 			continue
 		}
+		if dry {
+			if sc.until != nil && sc.until(d, tt) {
+				return i - rec, nil
+			}
+			continue
+		}
 		rasterize(&f, atlas, rgb, lut)
 		if sc.turn != nil {
 			turnFrame(rgb, rot, W, H, sc.turn(tt))
@@ -349,12 +392,15 @@ func renderGIF(t *testing.T, sc gifScene, cols, rows int, atlas [][]float64, pat
 			bw.Write(rgb)
 		}
 	}
+	if dry {
+		return 0, fmt.Errorf("%s: what should end it never happened", sc.demo)
+	}
 	for i := 0; i < int(sc.hold*gifFPS); i++ {
 		bw.Write(rgb)
 	}
 	bw.Flush()
 	pipe.Close()
-	return cmd.Wait()
+	return 0, cmd.Wait()
 }
 
 // gifFeed pushes a script's readings into every subscribed stream of the
@@ -585,7 +631,8 @@ func eyeScene() gifScene {
 }
 
 // The donut: held still in the room while you walk once around it, and
-// look at it from above and below.
+// look at it from above and below; the room's light rises from dim, where
+// only its highlights show, to bright, and falls again.
 func donutScene() gifScene {
 	const warm, T = 2.0, 10.0
 	pose := func(t float64) gifPose {
@@ -594,7 +641,9 @@ func donutScene() gifScene {
 	}
 	return gifScene{demo: "donut", warm: warm, secs: T,
 		inputs: func(t float64) map[string][]float64 {
-			return merge(gifMotion(pose, nil, t), map[string][]float64{"light": {200}})
+			x := (1 - math.Cos(2*math.Pi*cycle(t, warm, T))) / 2
+			lux := math.Round(math.Pow(10, 0.3+3.2*x)) // 2 to 3000 lux
+			return merge(gifMotion(pose, nil, t), map[string][]float64{"light": {lux}})
 		}}
 }
 
@@ -745,16 +794,19 @@ func homingScene() gifScene {
 		}}
 }
 
-// The hourglass, set to 5 s: the phone is turned over (the GIF turns with
-// it) and the sand pours through the neck and piles up; turned back, it
-// pours back, and the glass is as it began.
+// The hourglass, at its own minute: the first grains fall; the phone is
+// turned over (the GIF turns with it) and those few grains fall back, so
+// all the sand is on one side; turned again, the grains start to fall, as
+// at the start.
 func hourglassScene() gifScene {
-	const warm, T = 8.0, 13.0
+	const warm, T = 5.5, 4.6
+	flip := func(t, at float64) float64 { return 180 * ease(at, at+0.8, t) }
 	angle := func(t float64) float64 { // turned about the screen, degrees
+		a := flip(t, 0.4) + flip(t, warm-1.1) // before: all the sand to one side, then back
 		s := t - warm
-		return 180*ease(0.6, 1.4, s) + 180*ease(6.9, 7.7, s)
+		return a + flip(s, 0.5) + flip(s, 0.5+0.8+1.8+0.4) // a loop ends 0.3 s after the second flip, as it began
 	}
-	return gifScene{demo: "hourglass", arg: "5s", warm: warm, secs: T, turn: angle,
+	return gifScene{demo: "hourglass", warm: warm, secs: T, turn: angle,
 		inputs: func(t float64) map[string][]float64 {
 			a := (angle(t) + wave(t, T, 0, 1.2, 0, 0.6)) * math.Pi / 180
 			g := Vec3{9.81 * math.Sin(a), 9.81 * math.Cos(a), 0.8}
@@ -970,20 +1022,23 @@ func sundialScene() gifScene {
 }
 
 // The maze: a hand tilting the phone rolls the ball along the way to the
-// goal, across the bridges; it ends a moment after the ball drops in. The
-// board is large at this size, so it runs at 1.6 times the speed.
+// goal, across the bridges; a moment after the ball drops in, the board
+// fades back to the start. The board is large at this size, so it runs at
+// 1.6 times the speed.
 func mazeScene() gifScene {
 	const speed = 1.6
 	var m *maze
 	var gx, gy, last float64
 	var solvedAt float64 = -1
-	return gifScene{demo: "maze", warm: 1, secs: 60, speed: speed,
+	return gifScene{demo: "maze", warm: 1, secs: 60, speed: speed, fade: 0.7,
 		setup: func(t *testing.T, d Demo) { m = d.(*maze) },
 		until: func(d Demo, t float64) bool {
 			if m.state == solved && solvedAt < 0 {
 				solvedAt = t
 			}
-			return solvedAt >= 0 && t > solvedAt+2.2
+			// The banner a moment, well before the next board (the demo
+			// waits winDur of its own time, which runs faster here).
+			return solvedAt >= 0 && (t-solvedAt)*speed > winDur-1
 		},
 		inputs: func(t float64) map[string][]float64 {
 			ax, ay := 0.0, 0.0
