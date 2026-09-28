@@ -605,14 +605,22 @@ func (l *lavalamp) trace(eye, dir Vec3, wax []blob, t float64) ([3]float64, [3]f
 	if part != 2 { // chrome: the room, mirrored, and the lamp's glow where it faces the bottle
 		e := env(refl) + 0.35*math.Max(0, n.Dot(lavaRoom))
 		c := [3]float64{0.8 * e, 0.82 * e, 0.9 * e}
-		if part == 1 { // the base: brushed, it catches the bottle's glow above it, and mirrors it looking up
-			g := Smoothstep(-0.98, lavaBaseTop, p[1]) * (0.3 + 0.55*math.Max(0, refl[1]))
+		if part == 1 { // the base, brushed chrome in the lamp's own light
+			// It catches the bottle's glow above it, strongest near it; it
+			// mirrors the bottle looking up, and looking down the table
+			// round it, lit violet by the lamp. So no part of it goes dark.
+			near := 0.35 + 0.65*Smoothstep(-1, lavaBaseTop, p[1])
+			g := near*(0.3+0.55*math.Max(0, refl[1])) + 0.4*math.Max(0, -refl[1])
 			for k := range c {
-				c[k] += lavaFluid[k] * g
+				c[k] += lavaFluid[k]*g + 0.06
 			}
-		}
-		if part == 1 && p[1] > -0.93 && p[1] < -0.84 && math.Mod(math.Atan2(p[2], p[0])*9+20, 1) < 0.4 {
-			c = [3]float64{0.25, 0.08, 0.02} // vents, the bulb glowing through
+			if p[1] > -0.93 && p[1] < -0.84 && math.Mod(math.Atan2(p[2], p[0])*9+20, 1) < 0.4 {
+				// Vents: the bulb's warm light through them, over the chrome.
+				warm := [3]float64{0.9, 0.42, 0.12}
+				for k := range c {
+					c[k] = c[k]*0.65 + warm[k]*0.3
+				}
+			}
 		}
 		return c, none, part
 	}

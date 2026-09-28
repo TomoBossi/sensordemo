@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"math"
 	"strings"
-	"time"
 )
 
 // Scale maps a reading onto [0, 1] along a gauge bar.
@@ -198,7 +197,7 @@ func drawPulse(v *View, row int, g *Gauge, r Reading) {
 	if !r.OK {
 		return
 	}
-	level := math.Exp(-time.Since(r.Arrived).Seconds() / 0.18)
+	level := math.Exp(-Clock().Sub(r.Arrived).Seconds() / 0.18)
 	n := int(level*float64(barW) + 0.5)
 	for i := 0; i < n; i++ {
 		v.Set(x0+1+i, row, '#', 196)
