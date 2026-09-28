@@ -63,4 +63,4 @@ The `map` demo downloads streets, buildings, water and parks data from the publi
 
 ### Planetarium
 
-The `planetarium`'s stars and constellations come from [d3-celestial](https://github.com/ofrohn/d3-celestial), whose star data comes from the HYG database. Planet positions use JPL's approximate Keplerian elements.
+The `planetarium` demo's stars and constellations come from [d3-celestial](https://github.com/ofrohn/d3-celestial), whose star data comes from the HYG database. Planet positions use JPL's approximate Keplerian elements.
