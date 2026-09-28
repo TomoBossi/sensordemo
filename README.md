@@ -1,6 +1,6 @@
 # sensordemo
 
-TUI ASCII demos of the phone's sensors, fed by [`sensord`](../sensord). Meant to be viewed from within [`Termux`](https://github.com/termux/termux-app).
+TUI ASCII demos of the phone's sensors, fed by [`sensord`](https://github.com/TomoBossi/sensord). Meant to be viewed from within [`Termux`](https://github.com/termux/termux-app).
 
 Developed and tested on a Moto G17 Power.
 
@@ -34,10 +34,11 @@ Keys shared by every demo:
 ## Building
 
 ```sh
+go install github.com/TomoBossi/sensordemo@latest    # or, from a clone:
 go build -o $PREFIX/bin/sensordemo .
 ```
 
-The `sensord` client comes from `../sensord` via a `replace` in `go.mod`.
+It needs the [`sensord`](https://github.com/TomoBossi/sensord) app installed on the phone.
 
 To check a demo without the phone, `--snapshot WxH` renders about a second off-screen and prints the last frame, and `--mock` feeds it fixed readings:
 
@@ -64,3 +65,7 @@ The `map` demo downloads streets, buildings, water and parks data from the publi
 ### Planetarium
 
 The `planetarium` demo's stars and constellations come from [d3-celestial](https://github.com/ofrohn/d3-celestial), whose star data comes from the HYG database. Planet positions use JPL's approximate Keplerian elements.
+
+## License
+
+MIT, see [LICENSE](LICENSE). The star catalog in `demos/planetarium/skydata.go` keeps its sources' licenses: d3-celestial (BSD-3-Clause) and the HYG database (CC BY-SA 2.5).
