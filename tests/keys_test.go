@@ -1,4 +1,4 @@
-package main
+package tests
 
 import (
 	"os"
@@ -10,7 +10,10 @@ import (
 // q, c and ? belong to the app (quit, colors, help): no demo may bind
 // them, since the app takes them first.
 func TestNoDemoTakesGlobalKeys(t *testing.T) {
-	files, _ := filepath.Glob("demos/*/*.go")
+	files, _ := filepath.Glob("../demos/*/*.go")
+	if len(files) == 0 {
+		t.Fatal("no demo sources found")
+	}
 	re := regexp.MustCompile(`case[^:\n]*'[qc?]'`)
 	for _, f := range files {
 		if regexp.MustCompile(`_test\.go$`).MatchString(f) {

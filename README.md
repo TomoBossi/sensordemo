@@ -52,7 +52,7 @@ sensordemo --snapshot 70x30 --mock 'CHOP_CHOP=1' gestures
 To also see what the colors look like, the preview test renders a frame to a PNG, with each character as a patch of its terminal color and a rough glyph shape:
 
 ```sh
-PREVIEW='hourglass:70x56:90:gravity=0,9.8,0:/tmp/hg.png' go test -run TestPreview .
+PREVIEW='hourglass:70x56:90:gravity=0,9.8,0:/tmp/hg.png' go test -run TestPreview ./tests/
 ```
 
 ## Data sources

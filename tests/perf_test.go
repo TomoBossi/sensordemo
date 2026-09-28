@@ -1,4 +1,4 @@
-package main
+package tests
 
 import (
 	"fmt"
@@ -10,7 +10,7 @@ import (
 )
 
 // TestFrameTimes renders each demo at a normal and a small-font size.
-// Run with PERF=1 go test -run TestFrameTimes -v .
+// Run with PERF=1 go test -run TestFrameTimes -v ./tests/
 func TestFrameTimes(t *testing.T) {
 	if os.Getenv("PERF") == "" {
 		t.Skip("set PERF=1")
