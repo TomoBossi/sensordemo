@@ -153,7 +153,10 @@ func (c *candle) Setup(ss *Streams) ([]*Gauge, error) {
 		}
 	}
 	ss.Subscribe("linear_acceleration", 60)
-	ss.Subscribe("proximity", 0)
+	var g []*Gauge
+	if p, err := ss.Subscribe("proximity", 0); err == nil {
+		g = GaugesFor(p, 1) // shown as in the eye: a hand over it snuffs the flame
+	}
 	c.lit, c.power, c.melt = true, 1, 1
 	c.eye = Vec3{0, math.Sin(candleElev), math.Cos(candleElev)}
 	for i := 0; i < 9; i++ {
@@ -167,7 +170,7 @@ func (c *candle) Setup(ss *Streams) ([]*Gauge, error) {
 		dr.ca, dr.sa = math.Cos(dr.a), math.Sin(dr.a)
 	}
 	c.tables()
-	return GaugesFor(st, 3), nil
+	return append(g, GaugesFor(st, 3)...), nil
 }
 
 func (c *candle) Help() []string {
