@@ -1,5 +1,5 @@
-github.com/TomoBossi/sensord v0.1.0 h1:UVI+PjdXfuZQjCpw3T4wSdQl18BWa/NZEu1qpygVsVQ=
-github.com/TomoBossi/sensord v0.1.0/go.mod h1:Ywmad6r9XEeP+WjencQLnvtD3zs2a+o3SZJDAYcuZD4=
+github.com/TomoBossi/sensord v0.1.1 h1:bzHmqETBk74Fq/w81g/NUTFiS6mGwVBJ3v40UF8/AHw=
+github.com/TomoBossi/sensord v0.1.1/go.mod h1:Ywmad6r9XEeP+WjencQLnvtD3zs2a+o3SZJDAYcuZD4=
 golang.org/x/sys v0.48.0 h1:bbX/i/6MgT9BVLM9RT1thmxL04yeTAhbEz4SyadbXoo=
 golang.org/x/sys v0.48.0/go.mod h1:hNLxWAXmnKAxqDtdwIYC4bM9oQPEecfsnNMuSxOs3og=
 golang.org/x/term v0.46.0 h1:3+OXuTbaKDgwk8jTi3aSLHRlmWqHEUDUtxnbFigO4YE=
