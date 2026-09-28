@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	. "github.com/TomoBossi/sensordemo/internal/core"
 )
 
 // PREVIEW=demo:WxH:frames:mock:out.png renders a demo's frame as an image,
@@ -27,12 +29,12 @@ func TestPreview(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	e := find(p[0])
+	e := Find(p[0])
 	if i := strings.IndexByte(p[0], ' '); i > 0 {
-		e = find(p[0][:i])
-		demoArg = p[0][i+1:]
+		e = Find(p[0][:i])
+		DemoArg = p[0][i+1:]
 	}
-	d := e.new(nil)
+	d := e.New(nil)
 	if _, err := d.Setup(ss); err != nil {
 		t.Fatal(err)
 	}
@@ -53,7 +55,7 @@ func writePNG(f *Frame, path string) {
 	img := image.NewRGBA(image.Rect(0, 0, w*cw, h*ch))
 	for y := 0; y < h; y++ {
 		for x := 0; x < w; x++ {
-			c, fg := f.chars[y*w+x], f.fg[y*w+x]
+			c, fg := f.Cell(x, y)
 			col := xterm(fg)
 			for py := 0; py < ch; py++ {
 				for px := 0; px < cw; px++ {
@@ -91,7 +93,7 @@ func xterm(c uint8) color.RGBA {
 		return color.RGBA{v, v, v, 255}
 	}
 	i := int(c) - 16
-	return color.RGBA{uint8(cubeLevels[i/36]), uint8(cubeLevels[i/6%6]), uint8(cubeLevels[i%6]), 255}
+	return color.RGBA{uint8(CubeLevels[i/36]), uint8(CubeLevels[i/6%6]), uint8(CubeLevels[i%6]), 255}
 }
 
 // glyph is a rough coverage of character c at (u, v) in its cell.

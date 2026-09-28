@@ -8,89 +8,10 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	_ "github.com/TomoBossi/sensordemo/demos"
+	. "github.com/TomoBossi/sensordemo/internal/core"
 )
-
-// Demo is one visualization. Setup subscribes to what it needs and returns the
-// gauges for the data strip; Draw renders a frame into the space below it.
-type Demo interface {
-	Setup(ss *Streams) ([]*Gauge, error)
-	Draw(v *View, ss *Streams, t, dt float64)
-	Key(k byte)
-	Help() []string
-}
-
-type entry struct {
-	name string
-	desc string
-	uses []string // sensor types that map to this demo
-	new  func(specs []string) Demo
-}
-
-var registry []entry
-
-// demoArg is an optional second argument for the demo (such as the
-// hourglass's duration).
-var demoArg string
-
-func register(e entry) { registry = append(registry, e) }
-
-func find(name string) *entry {
-	for i := range registry {
-		if registry[i].name == name {
-			return &registry[i]
-		}
-	}
-	return nil
-}
-
-// pick maps the command-line argument to a demo: a demo name, or one or more
-// comma-separated sensors (names or types). For sensors, it picks the demo
-// whose sensors cover all of them with the fewest extras, and falls back to
-// the scope, which works for any sensor.
-func pick(arg string, ss *Streams) (*entry, []string, error) {
-	if e := find(arg); e != nil {
-		return e, nil, nil
-	}
-	specs := strings.Split(arg, ",")
-	types := make([]string, len(specs))
-	for i, sp := range specs {
-		s, ok := ss.Lookup(sp)
-		if !ok {
-			return nil, nil, fmt.Errorf("%q is neither a demo nor a sensor (see: sensordemo list, sensord list)", sp)
-		}
-		types[i] = s.Type
-	}
-	var best *entry
-	for i := range registry {
-		e := &registry[i]
-		if len(e.uses) == 0 || !covers(e.uses, types) {
-			continue
-		}
-		if best == nil || len(e.uses) < len(best.uses) {
-			best = e
-		}
-	}
-	if best == nil {
-		best = find("scope")
-	}
-	return best, specs, nil
-}
-
-func covers(have, want []string) bool {
-	for _, w := range want {
-		found := false
-		for _, h := range have {
-			if h == w {
-				found = true
-				break
-			}
-		}
-		if !found {
-			return false
-		}
-	}
-	return true
-}
 
 func usage() {
 	width := termWidth()
@@ -101,10 +22,10 @@ func usage() {
 		{"  sensordemo list", "the demos and the sensors they use"},
 	}, width))
 	fmt.Println("\ndemos:")
-	sort.Slice(registry, func(i, j int) bool { return registry[i].name < registry[j].name })
+	sort.Slice(Registry, func(i, j int) bool { return Registry[i].Name < Registry[j].Name })
 	var rows [][2]string
-	for _, e := range registry {
-		rows = append(rows, [2]string{"  " + e.name, e.desc})
+	for _, e := range Registry {
+		rows = append(rows, [2]string{"  " + e.Name, e.Desc})
 	}
 	fmt.Print(columns(rows, width))
 	fmt.Println()
@@ -119,15 +40,15 @@ Keys:
 }
 
 func list() {
-	sort.Slice(registry, func(i, j int) bool { return registry[i].name < registry[j].name })
+	sort.Slice(Registry, func(i, j int) bool { return Registry[i].Name < Registry[j].Name })
 	width := termWidth()
-	for _, e := range registry {
-		uses := strings.Join(e.uses, ", ")
+	for _, e := range Registry {
+		uses := strings.Join(e.Uses, ", ")
 		if uses == "" {
 			uses = "any sensor"
 		}
-		fmt.Println(e.name)
-		fmt.Println(strings.Join(wrapWords(e.desc, width, 4, 4), "\n"))
+		fmt.Println(e.Name)
+		fmt.Println(strings.Join(wrapWords(e.Desc, width, 4, 4), "\n"))
 		fmt.Println(strings.Join(wrapWords("sensors: "+uses, width, 4, 13), "\n"))
 	}
 }
@@ -168,7 +89,7 @@ func main() {
 		return
 	}
 	if len(args) == 2 {
-		demoArg = args[1] // e.g. sensordemo hourglass 5m
+		DemoArg = args[1] // e.g. sensordemo hourglass 5m
 		args = args[:1]
 	}
 	if len(args) != 1 {
@@ -190,31 +111,22 @@ func main() {
 	}
 }
 
-// screenGauge subscribes to the display rotation, which every demo that
-// uses orientation needs. It is not shown: it is plain from the screen
-// itself. Older sensord versions don't have it; then the screen is assumed
-// upright.
-func screenGauge(ss *Streams) []*Gauge {
-	ss.Subscribe("display_rotation", 0)
-	return nil
-}
-
 func run(arg string, gray bool) error {
 	ss, err := OpenStreams()
 	if err != nil {
 		return err
 	}
 	defer ss.Close()
-	e, specs, err := pick(arg, ss)
+	e, specs, err := PickDemo(arg, ss)
 	if err != nil {
 		return err
 	}
-	demo := e.new(specs)
+	demo := e.New(specs)
 	gauges, err := demo.Setup(ss)
 	if err != nil {
 		return err
 	}
-	gauges = append(gauges, screenGauge(ss)...)
+	gauges = append(gauges, ScreenGauge(ss)...)
 
 	t, err := OpenTerminal()
 	if err != nil {
@@ -233,7 +145,7 @@ func run(arg string, gray bool) error {
 		}
 	}()
 
-	title := e.name
+	title := e.Name
 	if specs != nil {
 		title += " (" + strings.Join(specs, ",") + ")"
 	}
@@ -254,7 +166,7 @@ func run(arg string, gray bool) error {
 			case 'q', 3, 4: // q, Ctrl-C, Ctrl-D
 				return nil
 			case 'c':
-				pal = (pal + 1) % len(palettes)
+				pal = (pal + 1) % len(Palettes)
 			case '?':
 				help = !help
 			default:
@@ -272,13 +184,13 @@ func run(arg string, gray bool) error {
 				}
 				fps += (1/d - fps) * 0.1
 			}
-			hudH := DrawHUD(f.View(0, 0, w, h), title, palettes[pal].name, fps, gauges, ss)
+			hudH := DrawHUD(f.View(0, 0, w, h), title, Palettes[pal].Name, fps, gauges, ss)
 			demo.Draw(f.View(0, hudH, w, h-hudH), ss, now.Sub(start).Seconds(), now.Sub(last).Seconds())
 			if help {
 				drawHelp(f.View(0, 0, w, h), e, demo.Help())
 			}
 			last = now
-			f.Flush(t.out, &palettes[pal])
+			f.Flush(t.out, &Palettes[pal])
 		}
 	}
 }
@@ -297,37 +209,37 @@ func snap(arg string, w, h int, mock string, frames int) error {
 		return err
 	}
 	defer ss.Close()
-	e, specs, err := pick(arg, ss)
+	e, specs, err := PickDemo(arg, ss)
 	if err != nil {
 		return err
 	}
-	demo := e.new(specs)
+	demo := e.New(specs)
 	gauges, err := demo.Setup(ss)
 	if err != nil {
 		return err
 	}
-	gauges = append(gauges, screenGauge(ss)...)
+	gauges = append(gauges, ScreenGauge(ss)...)
 	var f Frame
 	start := time.Now()
 	for i := 0; i < frames; i++ {
 		time.Sleep(time.Second / 30)
 		f.Resize(w, h)
-		hudH := DrawHUD(f.View(0, 0, w, h), e.name, "native", 0, gauges, ss)
+		hudH := DrawHUD(f.View(0, 0, w, h), e.Name, "native", 0, gauges, ss)
 		demo.Draw(f.View(0, hudH, w, h-hudH), ss, time.Since(start).Seconds(), 1.0/30)
 	}
 	for y := 0; y < f.H; y++ {
-		fmt.Println(string(f.chars[y*f.W : (y+1)*f.W]))
+		fmt.Println(f.Row(y))
 	}
 	return nil
 }
 
-func drawHelp(v *View, e *entry, lines []string) {
-	lines = append([]string{e.name + ": " + e.desc, ""}, lines...)
+func drawHelp(v *View, e *Entry, lines []string) {
+	lines = append([]string{e.Name + ": " + e.Desc, ""}, lines...)
 	lines = append(lines, "", "q quit   c colors   ? close this")
 	inner := max(10, min(v.W-4, 56))
 	var wrapped []string
 	for _, l := range lines {
-		wrapped = append(wrapped, wrap(l, inner)...)
+		wrapped = append(wrapped, Wrap(l, inner)...)
 	}
 	bw := 0
 	for _, l := range wrapped {
@@ -355,31 +267,4 @@ func drawHelp(v *View, e *entry, lines []string) {
 			v.Text(x0+2, y0+1+i, l, 252)
 		}
 	}
-}
-
-// wrap splits s into lines of at most n characters at spaces, keeping any
-// leading indentation on continuation lines.
-func wrap(s string, n int) []string {
-	if len(s) <= n {
-		return []string{s}
-	}
-	indent := len(s) - len(strings.TrimLeft(s, " "))
-	var out []string
-	line := ""
-	for _, w := range strings.Fields(s) {
-		switch {
-		case line == "":
-			line = strings.Repeat(" ", indent) + w
-		case len(line)+1+len(w) <= n:
-			line += " " + w
-		default:
-			out = append(out, line)
-			line = strings.Repeat(" ", indent) + w
-		}
-		for len(line) > n { // a single word longer than the line
-			out = append(out, line[:n])
-			line = line[n:]
-		}
-	}
-	return append(out, line)
 }

@@ -5,6 +5,8 @@ import (
 	"os"
 	"testing"
 	"time"
+
+	. "github.com/TomoBossi/sensordemo/internal/core"
 )
 
 // TestFrameTimes renders each demo at a normal and a small-font size.
@@ -17,7 +19,7 @@ func TestFrameTimes(t *testing.T) {
 	for _, name := range []string{"donut", "space", "eye", "navball", "fluid", "compass", "sky", "scope", "gestures"} {
 		for _, sz := range [][2]int{{70, 40}, {150, 90}} {
 			ss, _ := OpenMock(mock)
-			d := find(name).new(nil)
+			d := Find(name).New(nil)
 			d.Setup(ss)
 			var f Frame
 			f.Resize(sz[0], sz[1])

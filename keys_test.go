@@ -10,10 +10,10 @@ import (
 // q, c and ? belong to the app (quit, colors, help): no demo may bind
 // them, since the app takes them first.
 func TestNoDemoTakesGlobalKeys(t *testing.T) {
-	files, _ := filepath.Glob("*.go")
+	files, _ := filepath.Glob("demos/*/*.go")
 	re := regexp.MustCompile(`case[^:\n]*'[qc?]'`)
 	for _, f := range files {
-		if f == "main.go" || filepath.Ext(f) != ".go" || regexp.MustCompile(`_test\.go$`).MatchString(f) {
+		if regexp.MustCompile(`_test\.go$`).MatchString(f) {
 			continue
 		}
 		src, _ := os.ReadFile(f)
