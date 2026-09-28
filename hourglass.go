@@ -514,7 +514,7 @@ func (g *hourglass) Draw(v *View, ss *Streams, t, dt float64) {
 	}
 
 	left := time.Duration(float64(g.dur) * float64(src) / math.Max(1, float64(g.total))).Round(time.Second)
-	line := fmt.Sprintf("%s left of %s", clock(left), clock(g.dur))
+	line := fmt.Sprintf("%s left of %s", hms(left), hms(g.dur))
 	col := uint8(250)
 	switch {
 	case g.done > 0:
@@ -624,8 +624,8 @@ func (g *hourglass) drawSand(v *View) {
 	}
 }
 
-// clock formats a duration as m:ss, or h:mm:ss.
-func clock(d time.Duration) string {
+// hms formats a duration as m:ss, or h:mm:ss.
+func hms(d time.Duration) string {
 	s := int(d.Round(time.Second).Seconds())
 	if s >= 3600 {
 		return fmt.Sprintf("%d:%02d:%02d", s/3600, s/60%60, s%60)

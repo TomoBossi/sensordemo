@@ -88,7 +88,7 @@ func (s *Stream) push(ev client.Event) {
 	}
 	s.last, s.has = ev, true
 	s.count++
-	s.arrived = time.Now()
+	s.arrived = clock()
 	s.hist[s.histN%histLen] = ev.V
 	s.histN++
 }

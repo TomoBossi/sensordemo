@@ -60,7 +60,7 @@ func (p *planetarium) Key(k byte) {
 	case '-', '_':
 		p.speed = lapseSpeeds[max(i-1, 0)]
 		if p.speed == 1 {
-			p.simTime = time.Now() // back to real time
+			p.simTime = clock() // back to real time
 		}
 	case 'l':
 		p.lines = !p.lines
@@ -199,7 +199,7 @@ func (p *planetarium) Draw(v *View, ss *Streams, t, dt float64) {
 	}
 
 	// Simulated time: real time, or time-lapse.
-	now := time.Now()
+	now := clock()
 	if p.simTime.IsZero() {
 		p.simTime, p.last = now, now
 	}

@@ -104,7 +104,9 @@ func (c *navball) Draw(v *View, ss *Streams, t, dt float64) {
 
 	// Ball geometry: rows are twice as tall as columns.
 	rr := math.Min(float64(v.H-4)/2, float64(v.W)/4-1) // radius in rows
-	cx, cy := float64(v.W)/2, rr+1
+	// The ball and its two lines of readout, in the middle of the view
+	// (on a tall screen the width limits the ball).
+	cx, cy := float64(v.W)/2, math.Max(rr+1, (float64(v.H)-(2*rr+3))/2+rr)
 	n := v.W * v.H
 	if len(c.az) != n {
 		c.az, c.el, c.in = make([]float64, n), make([]float64, n), make([]bool, n)

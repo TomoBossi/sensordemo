@@ -194,7 +194,7 @@ func (s *sundial) Draw(v *View, ss *Streams, t, dt float64) {
 	if d, ok := declination(ss); ok {
 		decl = d
 	}
-	now := time.Now()
+	now := clock()
 	if s.simTime.IsZero() {
 		s.simTime, s.last = now, now
 	}

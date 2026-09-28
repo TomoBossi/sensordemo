@@ -87,7 +87,7 @@ const (
 var dirs = [4][2]int{{1, 0}, {-1, 0}, {0, 1}, {0, -1}}
 
 func (m *maze) Setup(ss *Streams) ([]*Gauge, error) {
-	m.seed = time.Now().UnixNano()
+	m.seed = clock().UnixNano()
 	st, err := ss.Subscribe("gravity", 60)
 	if err != nil {
 		if st, err = ss.Subscribe("accelerometer", 60); err != nil {
@@ -508,9 +508,9 @@ func (m *maze) Draw(v *View, ss *Streams, t, dt float64) {
 	if m.state == solved {
 		run = m.since - m.began
 	}
-	line := fmt.Sprintf("level %d   %s", m.level, clock(time.Duration(run*float64(time.Second))))
+	line := fmt.Sprintf("level %d   %s", m.level, hms(time.Duration(run*float64(time.Second))))
 	if m.best > 0 {
-		line += "   best " + clock(time.Duration(m.best*float64(time.Second)))
+		line += "   best " + hms(time.Duration(m.best*float64(time.Second)))
 	}
 	if m.falls > 0 {
 		line += fmt.Sprintf("   falls %d", m.falls)

@@ -143,7 +143,7 @@ func (h *homing) Draw(v *View, ss *Streams, t, dt float64) {
 	if h.save {
 		if !h.saved {
 			m := loadPlaces()
-			m[h.name] = place{Lat: here.Lat, Lon: here.Lon, Saved: time.Now()}
+			m[h.name] = place{Lat: here.Lat, Lon: here.Lon, Saved: clock()}
 			b, _ := json.MarshalIndent(m, "", "  ")
 			os.MkdirAll(filepath.Dir(placesPath()), 0o700)
 			if err := os.WriteFile(placesPath(), b, 0o600); err != nil {
@@ -182,16 +182,20 @@ func (h *homing) Draw(v *View, ss *Streams, t, dt float64) {
 	h.rel = math.Remainder(h.rel+math.Remainder(want-h.rel, 2*math.Pi)*math.Min(1, dt*5), 2*math.Pi)
 
 	near := dist < 15 || (!math.IsNaN(acc) && dist < acc*0.6)
-	area := v.H * 13 / 20
-	h.renderArrow(v, area, t, near)
-
 	// Distance and walking time.
 	dtext := formatDistance(dist)
 	if near {
 		dtext = "HERE"
 	}
+	// The arrow above, the distance below; on a tall screen the width
+	// limits the arrow, so the whole stands in the middle.
+	area := min(v.H*13/20, v.W*9/20)
 	s := max(1, fitScale(strings.ToUpper(dtext), v.W-4, (v.H-area)*2/3))
 	bw, bh := bannerSize(strings.ToUpper(dtext), s)
+	if top := (v.H - (area + bh + 2)) / 2; top > 0 {
+		v = &View{f: v.f, X: v.X, Y: v.Y + top, W: v.W, H: v.H - top}
+	}
+	h.renderArrow(v, area, t, near)
 	drawBanner(v, strings.ToUpper(dtext), (v.W-bw)/2, area, s, '#', map[bool]uint8{true: 114, false: 214}[near])
 	walk := time.Duration(dist / 1.3 * float64(time.Second)).Round(time.Minute)
 	info := fmt.Sprintf("to %s  -  %s on foot", h.name, strings.TrimSuffix(walk.String(), "0s"))

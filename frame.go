@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"strconv"
+	"strings"
 )
 
 // Frame is one screen of ASCII characters, each with an optional 256-color
@@ -58,12 +59,23 @@ func (v *View) Get(x, y int) byte {
 	return v.f.chars[(v.Y+y)*v.f.W+v.X+x]
 }
 
-// Text writes s from (x, y), clipped to the view.
+// Text writes s from (x, y), clipped to the view. A cell holds a byte, so
+// anything beyond ASCII is written as its nearest ASCII letter.
 func (v *View) Text(x, y int, s string, fg uint8) {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 0x80 {
+			s = asciiText(s)
+			break
+		}
+	}
 	for i := 0; i < len(s); i++ {
 		v.Set(x+i, y, s[i], fg)
 	}
 }
+
+// asciiText replaces each character beyond ASCII with its nearest ASCII
+// letter, as street names are (a degree sign reads as a small o).
+func asciiText(s string) string { return asciiFold(strings.ReplaceAll(s, "°", "o")) }
 
 // Flush brings the terminal up to date with the frame, in one write: only
 // the runs of characters that changed since the last Flush (the whole

@@ -5,7 +5,6 @@ import (
 	"math"
 	"math/rand"
 	"strings"
-	"time"
 )
 
 func init() {
@@ -64,7 +63,7 @@ var allGestures = []gesture{
 const burstLife = 1.6 // seconds a banner stays up
 
 func (g *gestures) Setup(ss *Streams) ([]*Gauge, error) {
-	g.rng = rand.New(rand.NewSource(time.Now().UnixNano()))
+	g.rng = rand.New(rand.NewSource(clock().UnixNano()))
 	want := map[string]bool{}
 	for _, sp := range g.specs {
 		if s, ok := ss.Lookup(sp); ok {
@@ -121,7 +120,7 @@ func (g *gestures) spawn(text string, color uint8, t float64, v *View) {
 		b.sparks = append(b.sparks, spark{cx, cy, math.Cos(a) * sp, math.Sin(a) * sp * 0.5})
 	}
 	g.bursts = append(g.bursts, b)
-	g.log = append(g.log, fmt.Sprintf("%s  %s", time.Now().Format("15:04:05"), text))
+	g.log = append(g.log, fmt.Sprintf("%s  %s", clock().Format("15:04:05"), text))
 	if len(g.log) > 50 {
 		g.log = g.log[1:]
 	}
