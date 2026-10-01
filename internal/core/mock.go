@@ -47,6 +47,12 @@ var mockSensors = []proto.Sensor{
 	{Name: "location", Type: "location", MaxHz: 1, Mode: "continuous", Default: true, Wakeup: true},
 	{Name: "gps", Type: "gps", MaxHz: 1, Mode: "continuous", Default: true, Wakeup: true},
 	{Name: "display_rotation", Type: "display_rotation", Mode: "on-change", Default: true, Wakeup: true},
+	{Name: "battery", Type: "battery", MaxHz: 4, Mode: "continuous", Default: true},
+	{Name: "thermal", Type: "thermal", MaxHz: 1, Mode: "continuous", Default: true},
+	{Name: "flashlight", Type: "flashlight", Mode: "on-change", Default: true, Wakeup: true},
+	{Name: "screen", Type: "screen", Mode: "on-change", Default: true, Wakeup: true},
+	{Name: "wifi", Type: "wifi", MaxHz: 1, Mode: "continuous", Default: true},
+	{Name: "cell", Type: "cell", Mode: "on-change", Default: true, Wakeup: true},
 }
 
 // OpenMock returns Streams that serve fixed readings instead of sensord.

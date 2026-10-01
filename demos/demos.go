@@ -2,6 +2,7 @@
 package demos
 
 import (
+	_ "github.com/TomoBossi/sensordemo/demos/battery"
 	_ "github.com/TomoBossi/sensordemo/demos/candle"
 	_ "github.com/TomoBossi/sensordemo/demos/compass"
 	_ "github.com/TomoBossi/sensordemo/demos/detector"
