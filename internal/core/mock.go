@@ -47,6 +47,8 @@ var mockSensors = []proto.Sensor{
 	{Name: "location", Type: "location", MaxHz: 1, Mode: "continuous", Default: true, Wakeup: true},
 	{Name: "gps", Type: "gps", MaxHz: 1, Mode: "continuous", Default: true, Wakeup: true},
 	{Name: "display_rotation", Type: "display_rotation", Mode: "on-change", Default: true, Wakeup: true},
+	{Name: "REAR_ALS", Type: "rearals", Mode: "on-change", Default: true, Wakeup: true},
+	{Name: "REAR_FLK", Type: "rearflk", Mode: "on-change", Wakeup: true},
 	{Name: "battery", Type: "battery", MaxHz: 4, Mode: "continuous", Default: true},
 	{Name: "thermal", Type: "thermal", MaxHz: 1, Mode: "continuous", Default: true},
 	{Name: "flashlight", Type: "flashlight", Mode: "on-change", Default: true, Wakeup: true},

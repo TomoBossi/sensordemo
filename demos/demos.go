@@ -9,6 +9,7 @@ import (
 	_ "github.com/TomoBossi/sensordemo/demos/dice"
 	_ "github.com/TomoBossi/sensordemo/demos/donut"
 	_ "github.com/TomoBossi/sensordemo/demos/eye"
+	_ "github.com/TomoBossi/sensordemo/demos/flicker"
 	_ "github.com/TomoBossi/sensordemo/demos/fluid"
 	_ "github.com/TomoBossi/sensordemo/demos/gestures"
 	_ "github.com/TomoBossi/sensordemo/demos/homing"

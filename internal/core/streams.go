@@ -135,6 +135,13 @@ func (ss *Streams) Lookup(spec string) (proto.Sensor, bool) {
 			return s, true
 		}
 	}
+	// A type with no default (a vendor's second light sensor) resolves to
+	// its first sensor, as in sensord.
+	for _, s := range ss.sensors {
+		if equalFold(s.Type, spec) {
+			return s, true
+		}
+	}
 	return proto.Sensor{}, false
 }
 
