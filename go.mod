@@ -3,7 +3,7 @@ module github.com/TomoBossi/sensordemo
 go 1.27.1
 
 require (
-	github.com/TomoBossi/sensord v0.1.1
+	github.com/TomoBossi/sensord v0.2.0
 	golang.org/x/term v0.46.0
 )
 
