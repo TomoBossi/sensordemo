@@ -103,6 +103,33 @@ func almond(x, y float64) float64 {
 	return (math.Hypot(x/a, yy) - 1) * b
 }
 
+// lidSpan is how far out the lids' margins run before they meet at the
+// corners.
+const lidSpan = 0.9
+
+// lidAngle is where a lid's margin crosses the eyeball at horizontal
+// position x, as an angle up from straight ahead (seen from the side, in
+// the y-z plane): highest (lowest, for the lower lid) at the middle, both
+// closing in to meet halfway at the corners, steeply at the last, which
+// gives the opening its almond shape. It is the one shape of the opening:
+// the lids are cut along it, and the overlay draws their margins on it. The
+// slope is the angle's change with x, for keeping the distance field
+// honest where the margin turns steep.
+func (e *eye) lidAngle(x float64, upper bool) (th, slope float64) {
+	taper := 1 - math.Abs(x)/lidSpan
+	from, to := e.thL, e.thU // the upper lid: from halfway at the corners up to thU
+	if !upper {
+		from, to = e.thU, e.thL
+	}
+	if taper <= 0 {
+		return (from + to) / 2, 0
+	}
+	sq := math.Sqrt(taper)
+	th = from + (to-from)*(0.5+0.5*sq)
+	slope = math.Abs(to-from) * 0.25 / (lidSpan * math.Max(sq, 0.04))
+	return th, slope
+}
+
 // faceHeight is the skin surface around the eye, as a height above the
 // eyeball's center: a gentle dome, the brow ridge above, the cheek below,
 // and the crease above the upper lid.
@@ -130,13 +157,19 @@ func (e *eye) scene(p Vec3) (float64, int) {
 	skin := (p[2] - faceHeight(p[0], p[1])) * 0.75
 	skin = Smax(skin, -almond(p[0], p[1]), 0.12)
 
-	// Lids: a shell over the eyeball above the upper edge angle and below
-	// the lower one, with rounded margins, blended into the face so they
-	// fold into it.
+	// Lids: a shell over the eyeball, above the upper margin and below the
+	// lower one (see lidAngle), with rounded margins, blended into the face
+	// so they fold into it. How far p is from a margin is its angle from it
+	// times its distance from the axis, slowed where the margin's angle
+	// changes fast with x so the march doesn't step past the corners.
 	shell := math.Abs(p.Len()-1.07) - 0.055
-	up := Vec3{0, math.Cos(e.thU), -math.Sin(e.thU)}
-	lo := Vec3{0, -math.Cos(e.thL), math.Sin(e.thL)}
-	lids := math.Min(Smax(shell, -p.Dot(up), 0.05), Smax(shell, -p.Dot(lo), 0.05))
+	ryz := math.Hypot(p[1], p[2])
+	th := math.Atan2(p[1], p[2])
+	thU, sU := e.lidAngle(p[0], true)
+	thL, sL := e.lidAngle(p[0], false)
+	up := (th - thU) * ryz / math.Sqrt(1+sU*sU*ryz*ryz) // >0 under the upper lid
+	lo := (thL - th) * ryz / math.Sqrt(1+sL*sL*ryz*ryz) // >0 under the lower lid
+	lids := math.Min(Smax(shell, -up, 0.05), Smax(shell, -lo, 0.05))
 	skin = Smin(skin, lids, 0.1)
 	if skin < d {
 		d, m = skin, eyeSkin
@@ -251,11 +284,7 @@ func (e *eye) Draw(v *View, ss *Streams, t, dt float64) {
 		}
 	}
 
-	e.gaze = Vec3{e.lookX * 0.5, -e.lookY * 0.4, 1}.Norm()
-	// Lid edge angles; closed, the upper lid reaches past the lower one.
-	e.thU = -0.12 + (0.38+0.12)*e.open
-	e.thL = -0.05 + (-0.32+0.05)*e.open
-	e.pupilA = 0.24 - 0.12*e.light
+	e.pose()
 
 	// The lamp hangs above you in the room; in eye coordinates it moves as
 	// the phone turns. A soft fixed light keeps the change gentle.
@@ -293,6 +322,17 @@ func (e *eye) Draw(v *View, ss *Streams, t, dt float64) {
 		}
 	})
 	e.overlay(v, camZ, tanX, tanY)
+}
+
+// pose sets this frame's gaze, lid angles and pupil from how open the eye
+// is, where it looks and the light.
+func (e *eye) pose() {
+	e.gaze = Vec3{e.lookX * 0.5, -e.lookY * 0.4, 1}.Norm()
+	// Lid edge angles at the middle; closed, the upper lid reaches past the
+	// lower one.
+	e.thU = -0.12 + (0.38+0.12)*e.open
+	e.thL = -0.05 + (-0.32+0.05)*e.open
+	e.pupilA = 0.24 - 0.12*e.light
 }
 
 func (e *eye) shade(v *View, x, y int, cam, dir, lamp, fill Vec3, strength float64) {
@@ -386,7 +426,7 @@ func (e *eye) overlay(v *View, camZ, tanX, tanY float64) {
 		return project(Vec3{x, rr * math.Sin(th), rr * math.Cos(th)})
 	}
 	col := rampAt(skinCol, 0.55+0.45*e.light)
-	const span = 0.9
+	const span = lidSpan
 	shut := e.open < 0.15
 	lastLash := -99
 	for x := -span; x <= span; x += 0.01 {
@@ -409,8 +449,10 @@ func (e *eye) overlay(v *View, camZ, tanX, tanY float64) {
 			}
 			continue
 		}
-		ux, uy := margin(x, e.thL+(e.thU-e.thL)*(0.5+0.5*math.Sqrt(taper)))
-		lx, ly := margin(x, e.thU+(e.thL-e.thU)*(0.5+0.5*math.Sqrt(taper)))
+		thU, _ := e.lidAngle(x, true)
+		thL, _ := e.lidAngle(x, false)
+		ux, uy := margin(x, thU)
+		lx, ly := margin(x, thL)
 		v.Set(ux, uy, '~', col)
 		v.Set(lx, ly, '~', col)
 		if ux != lastLash && ux%2 == 0 && taper > 0.12 {
